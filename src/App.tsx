@@ -44,7 +44,10 @@ import {
   TrendingUp,
   PieChart,
   Sliders,
-  Info
+  Info,
+  TrendingDown,
+  BellRing,
+  Activity
 } from 'lucide-react';
 
 import modernBgImg from '@/src/assets/images/modern_interior_bg_1794332151577.jpg';
@@ -87,11 +90,14 @@ interface WaterExpense {
   utilityType: 'WATER';
   company: string;
   invoiceNumber: string;
+  contractNumber?: string;
   chargeDate: string;
   receptionDate: string; // YYYY-MM-DD
   periodStartDate: string;
   periodEndDate: string;
   periodRange: string;
+  billingDays?: number;
+  costPerDay?: number;
   totalAmount: number; // Parte del inquilino
   fullInvoiceTotal?: number; // Total de la factura completa
   m3Consumed: number;
@@ -106,9 +112,22 @@ interface WaterExpense {
     sanitationCanon: number;
     taxes: number;
   };
+  waterTiers?: {
+    tier1_0_5m3?: number;
+    tier2_6_20m3?: number;
+    tier3_over20m3?: number;
+  };
+  municipalTaxes?: {
+    wasteTax?: number;
+    sanitationFixed?: number;
+    sanitationVariable?: number;
+  };
+  priceVariationPct?: number;
+  prevUnitPrice?: number;
   alarm: {
     hasAlarm: boolean;
     reason: string;
+    alerts?: string[];
   };
   notes: string;
   status: 'PENDING' | 'PAID';
@@ -120,20 +139,40 @@ interface ElectricityExpense {
   utilityType: 'ELECTRICITY';
   company: string;
   invoiceNumber: string;
+  contractNumber?: string;
+  cups?: string;
   chargeDate: string;
   receptionDate: string; // YYYY-MM-DD
   periodStartDate: string;
   periodEndDate: string;
   periodRange: string;
+  billingDays?: number;
+  costPerDay?: number;
   totalAmount: number; // Parte del inquilino
   fullInvoiceTotal?: number; // Total de la factura completa
   kwhConsumed: number;
-  unitPrice: number;
+  unitPrice: number; // Precio exacto €/kWh (ej 0.10115 o 0.169746)
   contractedPower: string;
   topGas: string;
+  fixedTermCost?: number;
+  energyCost?: number;
+  extraServicesCost?: number; // Ej: Tu Asistente 24h
+  extraServicesName?: string;
+  meterRent?: number;
+  bonoSocial?: number;
+  taxesCost?: number;
+  hourlyTiers?: {
+    puntaKwh?: number;
+    llanoKwh?: number;
+    valleKwh?: number;
+  };
+  priceVariationPct?: number;
+  prevUnitPrice?: number;
+  isRateChange?: boolean;
   alarm: {
     hasAlarm: boolean;
     reason: string;
+    alerts?: string[];
   };
   notes: string;
   status: 'PENDING' | 'PAID';
@@ -198,10 +237,14 @@ interface CustomHistoricalEntry {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'tenant' | 'months' | 'expenses' | 'billing' | 'desglose' | 'stats' | 'backup'>('tenant');
-  const [expensesSubTab, setExpensesSubTab] = useState<'summary' | 'water' | 'electricity' | 'other'>('summary');
+  const [activeTab, setActiveTab] = useState<'tenant' | 'months' | 'expenses' | 'billing' | 'desglose' | 'stats' | 'backup' | 'analytics'>('tenant');
+  const [expensesSubTab, setExpensesSubTab] = useState<'summary' | 'audit_elec' | 'audit_water' | 'other'>('summary');
   const [billingSubTab, setBillingSubTab] = useState<'4.1_builder' | '4.2_receipts' | '4.3_history' | '4.4_stats'>('4.1_builder');
   const [filterExpenseStatus, setFilterExpenseStatus] = useState<'ALL' | 'PENDING' | 'PAID'>('ALL');
+
+  // Advanced Supply Analytics Filters
+  const [analyticsPeriod, setAnalyticsPeriod] = useState<number | 'ALL' | 'L12M'>(2026);
+  const [analyticsCompareWith, setAnalyticsCompareWith] = useState<'PREV_YEAR' | 'AVERAGE'>('PREV_YEAR');
 
   // Tenant state
   const [tenant, setTenant] = useState<TenantInfo>(() => {
@@ -244,23 +287,296 @@ export default function App() {
     };
   });
 
-  // Water expenses
+  // Water expenses (Desglose tipo EMUASA Aguas de Murcia con tasas municipales)
   const [waterExpenses, setWaterExpenses] = useState<WaterExpense[]>(() => {
-    const saved = localStorage.getItem('inquilinopro_water');
+    const saved = localStorage.getItem('inquilinopro_water_v2');
     return saved ? JSON.parse(saved) : [
-      { id: 'w_jan', utilityType: 'WATER', company: 'EMUASA', invoiceNumber: 'W-01', chargeDate: '2026-01-12', receptionDate: '2026-01-12', periodStartDate: '2025-11-01', periodEndDate: '2026-01-01', periodRange: '11/01/2026 - 11/03/2026', totalAmount: 81.75, fullInvoiceTotal: 163.50, m3Consumed: 12, unitPrice: 1.8, contractedPower: '15mm', breakdown: { waterService: 20, waterConsumption: 25, meterConservation: 1, sewerage: 15, wasteCollection: 15, sanitationCanon: 3, taxes: 2.75 }, alarm: { hasAlarm: false, reason: '' }, notes: '', status: 'PAID' },
-      { id: 'w_mar', utilityType: 'WATER', company: 'EMUASA', invoiceNumber: 'W-03', chargeDate: '2026-03-11', receptionDate: '2026-03-11', periodStartDate: '2026-01-01', periodEndDate: '2026-03-01', periodRange: '11/03/2026 - 11/05/2026', totalAmount: 81.75, fullInvoiceTotal: 163.50, m3Consumed: 12, unitPrice: 1.8, contractedPower: '15mm', breakdown: { waterService: 20, waterConsumption: 25, meterConservation: 1, sewerage: 15, wasteCollection: 15, sanitationCanon: 3, taxes: 2.75 }, alarm: { hasAlarm: false, reason: '' }, notes: '', status: 'PAID' },
-      { id: 'w_jul', utilityType: 'WATER', company: 'EMUASA', invoiceNumber: 'W-07', chargeDate: '2026-07-13', receptionDate: '2026-07-13', periodStartDate: '2026-05-01', periodEndDate: '2026-07-01', periodRange: '10/07/2026 - 08/09/2026', totalAmount: 41.78, fullInvoiceTotal: 83.57, m3Consumed: 13, unitPrice: 1.8, contractedPower: '15mm', breakdown: { waterService: 20, waterConsumption: 27, meterConservation: 1, sewerage: 15, wasteCollection: 15, sanitationCanon: 3, taxes: 3.48 }, alarm: { hasAlarm: false, reason: '' }, notes: 'Bimestral', status: 'PENDING' },
+      {
+        id: 'w_sep26',
+        utilityType: 'WATER',
+        company: 'EMUASA Aguas de Murcia',
+        invoiceNumber: '06102026A100849994',
+        contractNumber: '6577933',
+        chargeDate: '09.09.2026',
+        receptionDate: '2026-09-09',
+        periodStartDate: '2026-07-10',
+        periodEndDate: '2026-09-08',
+        periodRange: '10/07/2026 - 08/09/2026',
+        billingDays: 60,
+        costPerDay: 1.393,
+        totalAmount: 41.79, // 50%
+        fullInvoiceTotal: 83.57,
+        m3Consumed: 17,
+        unitPrice: 1.48,
+        contractedPower: 'Contador 15mm (D15TA174976G)',
+        breakdown: {
+          waterService: 13.80,
+          waterConsumption: 15.90,
+          meterConservation: 0.67,
+          sewerage: 8.58,
+          wasteCollection: 28.35,
+          sanitationCanon: 11.10,
+          taxes: 4.08
+        },
+        waterTiers: { tier1_0_5m3: 3.16, tier2_6_20m3: 12.74, tier3_over20m3: 0.00 },
+        municipalTaxes: { wasteTax: 28.35, sanitationFixed: 6.00, sanitationVariable: 5.10 },
+        alarm: {
+          hasAlarm: true,
+          reason: 'La tasa de basura (28,35€) y el canon de saneamiento (11,10€) suman el 47,2% del total de la factura.',
+          alerts: [
+            'Tasa de Basura del Ayuntamiento de Murcia: 28,35 € (33,9% del total)',
+            'Canon de Saneamiento ESAMUR: 11,10 € (Fijo 6,00 € + Variable 5,10 €)'
+          ]
+        },
+        notes: 'Factura bimestral de 17 m3. Fuerte impacto de tasas municipales.',
+        status: 'PENDING'
+      },
+      {
+        id: 'w_jul26',
+        utilityType: 'WATER',
+        company: 'EMUASA Aguas de Murcia',
+        invoiceNumber: '06102026A100612140',
+        contractNumber: '6577933',
+        chargeDate: '09.07.2026',
+        receptionDate: '2026-07-09',
+        periodStartDate: '2026-05-11',
+        periodEndDate: '2026-07-10',
+        periodRange: '11/05/2026 - 10/07/2026',
+        billingDays: 60,
+        costPerDay: 1.320,
+        totalAmount: 39.60,
+        fullInvoiceTotal: 79.20,
+        m3Consumed: 14,
+        unitPrice: 1.45,
+        contractedPower: 'Contador 15mm',
+        breakdown: {
+          waterService: 13.80,
+          waterConsumption: 13.10,
+          meterConservation: 0.67,
+          sewerage: 7.40,
+          wasteCollection: 28.35,
+          sanitationCanon: 9.80,
+          taxes: 3.88
+        },
+        alarm: { hasAlarm: false, reason: '' },
+        notes: 'Factura bimestral pagada',
+        status: 'PAID'
+      },
+      {
+        id: 'w_may26',
+        utilityType: 'WATER',
+        company: 'EMUASA Aguas de Murcia',
+        invoiceNumber: '06102026A100498112',
+        contractNumber: '6577933',
+        chargeDate: '11.05.2026',
+        receptionDate: '2026-05-11',
+        periodStartDate: '2026-03-11',
+        periodEndDate: '2026-05-11',
+        periodRange: '11/03/2026 - 11/05/2026',
+        billingDays: 61,
+        costPerDay: 1.400,
+        totalAmount: 42.70,
+        fullInvoiceTotal: 85.40,
+        m3Consumed: 18,
+        unitPrice: 1.50,
+        contractedPower: 'Contador 15mm',
+        breakdown: {
+          waterService: 13.80,
+          waterConsumption: 16.90,
+          meterConservation: 0.67,
+          sewerage: 9.10,
+          wasteCollection: 28.35,
+          sanitationCanon: 11.60,
+          taxes: 4.18
+        },
+        alarm: { hasAlarm: false, reason: '' },
+        notes: 'Liquidada en recibo',
+        status: 'PAID'
+      }
     ];
   });
 
-  // Electricity expenses
+  // Electricity expenses (Historial real Repsol con seguimiento de precio kWh, tramos y servicios ocultos)
   const [electricityExpenses, setElectricityExpenses] = useState<ElectricityExpense[]>(() => {
-    const saved = localStorage.getItem('inquilinopro_elec');
+    const saved = localStorage.getItem('inquilinopro_elec_v2');
     return saved ? JSON.parse(saved) : [
-      { id: 'e_01', utilityType: 'ELECTRICITY', company: 'Iberdrola', invoiceNumber: 'E-01', chargeDate: '2026-09-29', receptionDate: '2026-09-29', periodStartDate: '2026-08-24', periodEndDate: '2026-09-24', periodRange: '24/09/2026 - 24/10/2026', totalAmount: 51.66, fullInvoiceTotal: 103.33, kwhConsumed: 280, unitPrice: 0.14, contractedPower: '4.6kW', topGas: 'No', alarm: { hasAlarm: false, reason: '' }, notes: 'Mensual', status: 'PENDING' },
-      { id: 'e_02', utilityType: 'ELECTRICITY', company: 'Iberdrola', invoiceNumber: 'E-02', chargeDate: '2026-08-27', receptionDate: '2026-08-27', periodStartDate: '2026-07-24', periodEndDate: '2026-08-24', periodRange: '24/08/2026 - 24/09/2026', totalAmount: 66.08, fullInvoiceTotal: 132.16, kwhConsumed: 450, unitPrice: 0.14, contractedPower: '4.6kW', topGas: 'No', alarm: { hasAlarm: false, reason: '' }, notes: 'Mensual', status: 'PENDING' },
-      { id: 'e_03', utilityType: 'ELECTRICITY', company: 'Iberdrola', invoiceNumber: 'E-03', chargeDate: '2026-07-27', receptionDate: '2026-07-27', periodStartDate: '2026-06-24', periodEndDate: '2026-07-24', periodRange: '24/07/2026 - 24/08/2026', totalAmount: 52.59, fullInvoiceTotal: 105.19, kwhConsumed: 340, unitPrice: 0.14, contractedPower: '4.6kW', topGas: 'No', alarm: { hasAlarm: false, reason: '' }, notes: 'Mensual', status: 'PAID' },
+      {
+        id: 'e_oct26',
+        utilityType: 'ELECTRICITY',
+        company: 'Repsol Comercializadora',
+        invoiceNumber: '61093604335',
+        contractNumber: '4301983815',
+        cups: 'ES0021000013023167NN1F',
+        chargeDate: '29.10.2026',
+        receptionDate: '2026-10-29',
+        periodStartDate: '2026-09-24',
+        periodEndDate: '2026-10-24',
+        periodRange: '24/09/2026 - 24/10/2026',
+        billingDays: 30,
+        costPerDay: 3.44,
+        totalAmount: 51.67, // 50%
+        fullInvoiceTotal: 103.33,
+        kwhConsumed: 415.27,
+        unitPrice: 0.101150,
+        prevUnitPrice: 0.139746,
+        priceVariationPct: -27.6, // ¡Gran bajada de precio de energía!
+        contractedPower: '6,900 kW',
+        fixedTermCost: 33.92,
+        energyCost: 42.01,
+        extraServicesCost: 4.06,
+        extraServicesName: 'Tu Asistente 24h',
+        meterRent: 0.75,
+        bonoSocial: 0.74,
+        taxesCost: 21.85,
+        hourlyTiers: {
+          puntaKwh: 96.23,
+          llanoKwh: 96.80,
+          valleKwh: 222.25
+        },
+        topGas: 'No',
+        alarm: {
+          hasAlarm: true,
+          reason: 'Servicio accesorio detectado: Repsol cobra 4,06 € por Tu Asistente 24h. Bajada de precio de kWh de 0,1397 € a 0,1011 € (-27,6%).',
+          alerts: [
+            '📉 Bajada de precio kWh: De 0,139746 € a 0,101150 € (-27,6% de ahorro en término de energía).',
+            '🚨 Cobro no esencial detectado: 4,06 € facturados por "Tu Asistente 24h" (posible servicio prescindible).'
+          ]
+        },
+        notes: 'Factura oficial Repsol. Potencia 6,9 kW. Bajada sustancial de precio de energía pero incluye Tu Asistente 24h.',
+        status: 'PENDING'
+      },
+      {
+        id: 'e_sep26',
+        utilityType: 'ELECTRICITY',
+        company: 'Repsol Comercializadora',
+        invoiceNumber: '61093512891',
+        contractNumber: '4301983815',
+        chargeDate: '03.10.2026',
+        receptionDate: '2026-10-03',
+        periodStartDate: '2026-08-24',
+        periodEndDate: '2026-09-24',
+        periodRange: '24/08/2026 - 24/09/2026',
+        billingDays: 31,
+        costPerDay: 2.607,
+        totalAmount: 40.41,
+        fullInvoiceTotal: 80.82,
+        kwhConsumed: 332.00,
+        unitPrice: 0.139746,
+        prevUnitPrice: 0.139746,
+        priceVariationPct: 0.0,
+        contractedPower: '6,900 kW',
+        fixedTermCost: 33.92,
+        energyCost: 46.40,
+        extraServicesCost: 4.06,
+        extraServicesName: 'Tu Asistente 24h',
+        hourlyTiers: {
+          puntaKwh: 97.00,
+          llanoKwh: 103.00,
+          valleKwh: 132.00
+        },
+        topGas: 'No',
+        alarm: { hasAlarm: false, reason: '' },
+        notes: 'Factura mensual septiembre',
+        status: 'PENDING'
+      },
+      {
+        id: 'e_aug26',
+        utilityType: 'ELECTRICITY',
+        company: 'Repsol Comercializadora',
+        invoiceNumber: '61093409123',
+        chargeDate: '03.09.2026',
+        receptionDate: '2026-09-03',
+        periodStartDate: '2026-07-24',
+        periodEndDate: '2026-08-24',
+        periodRange: '24/07/2026 - 24/08/2026',
+        billingDays: 31,
+        costPerDay: 3.049,
+        totalAmount: 47.26,
+        fullInvoiceTotal: 94.52,
+        kwhConsumed: 417.00,
+        unitPrice: 0.139746,
+        prevUnitPrice: 0.139746,
+        priceVariationPct: 0.0,
+        contractedPower: '6,900 kW',
+        extraServicesCost: 4.06,
+        extraServicesName: 'Tu Asistente 24h',
+        hourlyTiers: {
+          puntaKwh: 120.00,
+          llanoKwh: 121.00,
+          valleKwh: 176.00
+        },
+        topGas: 'No',
+        alarm: { hasAlarm: false, reason: '' },
+        notes: 'Verano climatización',
+        status: 'PAID'
+      },
+      {
+        id: 'e_jul26',
+        utilityType: 'ELECTRICITY',
+        company: 'Repsol Comercializadora',
+        invoiceNumber: '61093301290',
+        chargeDate: '02.08.2026',
+        receptionDate: '2026-08-02',
+        periodStartDate: '2026-06-24',
+        periodEndDate: '2026-07-24',
+        periodRange: '24/06/2026 - 24/07/2026',
+        billingDays: 30,
+        costPerDay: 3.150,
+        totalAmount: 47.26,
+        fullInvoiceTotal: 94.52,
+        kwhConsumed: 425.00,
+        unitPrice: 0.139746,
+        prevUnitPrice: 0.169342,
+        priceVariationPct: -17.5,
+        contractedPower: '6,900 kW',
+        extraServicesCost: 4.06,
+        extraServicesName: 'Tu Asistente 24h',
+        hourlyTiers: {
+          puntaKwh: 128.00,
+          llanoKwh: 121.00,
+          valleKwh: 176.00
+        },
+        topGas: 'No',
+        alarm: {
+          hasAlarm: true,
+          reason: 'Bajada de tarifa tras negociación: De 0,169342 € a 0,139746 € (-17,5%).'
+        },
+        notes: 'Nuevo precio tras fin de contrato anterior',
+        status: 'PAID'
+      },
+      {
+        id: 'e_jun26',
+        utilityType: 'ELECTRICITY',
+        company: 'Repsol Comercializadora',
+        invoiceNumber: '61093208741',
+        chargeDate: '03.07.2026',
+        receptionDate: '2026-07-03',
+        periodStartDate: '2026-05-24',
+        periodEndDate: '2026-06-24',
+        periodRange: '01/06/2026 - 03/07/2026',
+        billingDays: 32,
+        costPerDay: 3.662,
+        totalAmount: 58.60,
+        fullInvoiceTotal: 117.20,
+        kwhConsumed: 477.00,
+        unitPrice: 0.169342,
+        isRateChange: true,
+        contractedPower: '6,900 kW',
+        extraServicesCost: 4.06,
+        extraServicesName: 'Tu Asistente 24h',
+        hourlyTiers: {
+          puntaKwh: 103.00,
+          llanoKwh: 167.00,
+          valleKwh: 207.00
+        },
+        topGas: 'No',
+        alarm: {
+          hasAlarm: true,
+          reason: '⚡ CAMBIO DE TARIFA indicado en factura por la comercializadora.'
+        },
+        notes: 'Cambio de tarifa registrado en hoja Repsol',
+        status: 'PAID'
+      }
     ];
   });
 
@@ -321,8 +637,8 @@ export default function App() {
     localStorage.setItem('inquilinopro_advances', JSON.stringify(advances));
     localStorage.setItem('inquilinopro_rents', JSON.stringify(rentRates));
     localStorage.setItem('inquilinopro_supply_rules', JSON.stringify(supplyRules));
-    localStorage.setItem('inquilinopro_water', JSON.stringify(waterExpenses));
-    localStorage.setItem('inquilinopro_elec', JSON.stringify(electricityExpenses));
+    localStorage.setItem('inquilinopro_water_v2', JSON.stringify(waterExpenses));
+    localStorage.setItem('inquilinopro_elec_v2', JSON.stringify(electricityExpenses));
     localStorage.setItem('inquilinopro_other', JSON.stringify(otherExpenses));
     localStorage.setItem('inquilinopro_receipts', JSON.stringify(receipts));
     localStorage.setItem('inquilinopro_tenant_balance', tenantAccumulatedBalance.toString());
@@ -334,6 +650,19 @@ export default function App() {
   const [aiModalType, setAiModalType] = useState<'WATER' | 'ELECTRICITY' | null>(null);
   const [rawAiInput, setRawAiInput] = useState('');
   const [aiImageBase64, setAiImageBase64] = useState<string | null>(null);
+
+  // Dedicated Audit Inspector and Alert States
+  const [auditedBillPreview, setAuditedBillPreview] = useState<{
+    expense: ElectricityExpense | WaterExpense;
+    type: 'ELECTRICITY' | 'WATER';
+    priceDiffPct?: number;
+    prevUnitPrice?: number;
+    alerts: string[];
+    isRateChange?: boolean;
+    extraServiceWarning?: string;
+  } | null>(null);
+
+  const [viewingAuditExpense, setViewingAuditExpense] = useState<ElectricityExpense | WaterExpense | null>(null);
 
   // Selected receipt for detailed preview / print modal
   const [selectedReceiptForModal, setSelectedReceiptForModal] = useState<ReceiptItem | null>(null);
@@ -716,10 +1045,10 @@ export default function App() {
     }
   };
 
-  // AI OCR Bill Parsing
+  // AI OCR Bill Parsing with Deep Energy & Municipal Water Audit
   const handleScanBill = async (type: 'WATER' | 'ELECTRICITY') => {
     if (!rawAiInput && !aiImageBase64) {
-      alert('Por favor, pega el texto de la factura o sube una imagen.');
+      alert('Por favor, selecciona una factura de ejemplo, pega el texto de la factura o sube una imagen.');
       return;
     }
 
@@ -743,68 +1072,151 @@ export default function App() {
         const splitPct = supplyRules.water / 100;
         const total = Number(data.totalAmount) || 0;
         const tenantShare = Math.round(total * splitPct * 100) / 100;
+        const wasteTax = data.breakdown?.wasteCollection || data.municipalTaxes?.wasteTax || 0;
+        const canon = data.breakdown?.sanitationCanon || ((data.municipalTaxes?.sanitationFixed || 0) + (data.municipalTaxes?.sanitationVariable || 0)) || 0;
+
+        const alerts: string[] = [];
+        if (data.alarm?.alerts && Array.isArray(data.alarm.alerts)) {
+          alerts.push(...data.alarm.alerts);
+        }
+        if (total > 0 && (wasteTax + canon) > 0) {
+          const taxPct = Math.round(((wasteTax + canon) / total) * 1000) / 10;
+          if (taxPct >= 30) {
+            alerts.unshift(`ℹ️ IMPACTO FISCAL ELEVADO: Las tasas municipales y autonómicas (Basura ${wasteTax.toFixed(2)}€ + Saneamiento ${canon.toFixed(2)}€) suponen el ${taxPct}% del total de la factura.`);
+          }
+        }
 
         const newWater: WaterExpense = {
           id: 'w_' + Date.now(),
           utilityType: 'WATER',
-          company: data.company || 'Empresa de Agua',
+          company: data.company || 'EMUASA Aguas de Murcia',
           invoiceNumber: data.invoiceNumber || 'S/N',
+          contractNumber: data.contractNumber,
           chargeDate: data.chargeDate || new Date().toLocaleDateString('es-ES'),
           receptionDate: data.receptionDate || new Date().toISOString().split('T')[0],
           periodStartDate: data.periodStartDate || '',
           periodEndDate: data.periodEndDate || '',
-          periodRange: data.periodRange || 'Reciente',
+          periodRange: data.periodRange || 'Periodo reciente',
+          billingDays: Number(data.billingDays) || 60,
+          costPerDay: Number(data.costPerDay) || (total / 60),
           totalAmount: tenantShare,
           fullInvoiceTotal: total,
           m3Consumed: Number(data.m3Consumed) || 0,
-          unitPrice: Number(data.unitPrice) || 0,
-          contractedPower: data.contractedPower || '',
+          unitPrice: Number(data.unitPrice) || 1.48,
+          contractedPower: data.contractedPower || 'Contador 15mm',
           breakdown: data.breakdown || {
             waterService: 0,
             waterConsumption: 0,
             meterConservation: 0,
             sewerage: 0,
-            wasteCollection: 0,
-            sanitationCanon: 0,
+            wasteCollection: wasteTax,
+            sanitationCanon: canon,
             taxes: 0
           },
-          alarm: data.alarm || { hasAlarm: false, reason: '' },
-          notes: `${data.notes || ''} (Factura total: ${total}€, aplicado ${supplyRules.water}%)`,
+          waterTiers: data.waterTiers,
+          municipalTaxes: data.municipalTaxes,
+          alarm: {
+            hasAlarm: alerts.length > 0,
+            reason: alerts[0] || '',
+            alerts: alerts
+          },
+          notes: `${data.notes || ''} (Factura total: ${total.toFixed(2)}€, aplicado ${supplyRules.water}%)`,
           status: 'PENDING'
         };
+
         setWaterExpenses([newWater, ...waterExpenses]);
+        setAuditedBillPreview({
+          expense: newWater,
+          type: 'WATER',
+          alerts: alerts
+        });
       } else {
         const splitPct = supplyRules.electricity / 100;
         const total = Number(data.totalAmount) || 0;
         const tenantShare = Math.round(total * splitPct * 100) / 100;
+        const currentKwhPrice = Number(data.unitPrice) || 0;
+
+        // Compare against most recent bill
+        const prevElec = electricityExpenses[0];
+        let priceDiffPct: number | undefined;
+        let prevUnitPrice: number | undefined;
+        const alerts: string[] = [];
+
+        if (data.alarm?.alerts && Array.isArray(data.alarm.alerts)) {
+          alerts.push(...data.alarm.alerts);
+        }
+
+        if (prevElec && prevElec.unitPrice && currentKwhPrice > 0) {
+          prevUnitPrice = prevElec.unitPrice;
+          const diff = ((currentKwhPrice - prevElec.unitPrice) / prevElec.unitPrice) * 100;
+          priceDiffPct = Math.round(diff * 10) / 10;
+
+          if (priceDiffPct > 2) {
+            alerts.unshift(`⚠️ SUBIDA DE TARIFA DETECTADA: El precio por kWh sube de ${prevElec.unitPrice.toFixed(5)} € a ${currentKwhPrice.toFixed(5)} € (+${priceDiffPct}%).`);
+          } else if (priceDiffPct < -2) {
+            alerts.unshift(`📉 BAJADA DE PRECIO: Ahorro de ${Math.abs(priceDiffPct)}% en el precio de kWh (pasa de ${prevElec.unitPrice.toFixed(5)} € a ${currentKwhPrice.toFixed(5)} €).`);
+          }
+        }
+
+        const extraCost = Number(data.extraServicesCost) || 0;
+        const extraName = data.extraServicesName || 'Servicio accesorio no esencial';
+        if (extraCost > 0) {
+          alerts.unshift(`🚨 COBRO NO ESENCIAL DETECTADO: Se cobran ${extraCost.toFixed(2)} € por "${extraName}". Este seguro o servicio de asistencia suele ser prescindible.`);
+        }
 
         const newElec: ElectricityExpense = {
           id: 'e_' + Date.now(),
           utilityType: 'ELECTRICITY',
-          company: data.company || 'Comercializadora Eléctrica',
+          company: data.company || 'Repsol Comercializadora',
           invoiceNumber: data.invoiceNumber || 'S/N',
+          contractNumber: data.contractNumber,
+          cups: data.cups,
           chargeDate: data.chargeDate || new Date().toLocaleDateString('es-ES'),
           receptionDate: data.receptionDate || new Date().toISOString().split('T')[0],
           periodStartDate: data.periodStartDate || '',
           periodEndDate: data.periodEndDate || '',
-          periodRange: data.periodRange || 'Reciente',
+          periodRange: data.periodRange || 'Periodo reciente',
+          billingDays: Number(data.billingDays) || 30,
+          costPerDay: Number(data.costPerDay) || (total / 30),
           totalAmount: tenantShare,
           fullInvoiceTotal: total,
           kwhConsumed: Number(data.kwhConsumed) || 0,
-          unitPrice: Number(data.unitPrice) || 0,
-          contractedPower: data.contractedPower || '',
+          unitPrice: currentKwhPrice,
+          prevUnitPrice: prevUnitPrice,
+          priceVariationPct: priceDiffPct,
+          contractedPower: data.contractedPower || '6,900 kW',
           topGas: data.topGas || 'No',
-          alarm: data.alarm || { hasAlarm: false, reason: '' },
-          notes: `${data.notes || ''} (Factura total: ${total}€, aplicado ${supplyRules.electricity}%)`,
+          fixedTermCost: Number(data.fixedTermCost) || 0,
+          energyCost: Number(data.energyCost) || 0,
+          extraServicesCost: extraCost,
+          extraServicesName: extraName,
+          meterRent: Number(data.meterRent) || 0,
+          bonoSocial: Number(data.bonoSocial) || 0,
+          taxesCost: Number(data.taxesCost) || 0,
+          hourlyTiers: data.hourlyTiers,
+          alarm: {
+            hasAlarm: alerts.length > 0,
+            reason: alerts[0] || '',
+            alerts: alerts
+          },
+          notes: `${data.notes || ''} (Factura total: ${total.toFixed(2)}€, aplicado ${supplyRules.electricity}%)`,
           status: 'PENDING'
         };
+
         setElectricityExpenses([newElec, ...electricityExpenses]);
+        setAuditedBillPreview({
+          expense: newElec,
+          type: 'ELECTRICITY',
+          priceDiffPct: priceDiffPct,
+          prevUnitPrice: prevUnitPrice,
+          alerts: alerts,
+          extraServiceWarning: extraCost > 0 ? `${extraCost.toFixed(2)} € por ${extraName}` : undefined
+        });
       }
 
       setAiModalType(null);
       setRawAiInput('');
       setAiImageBase64(null);
-      alert('¡Factura digitalizada y añadida en estado PENDIENTE! Puedes incorporarla a un recibo en la sección 4.');
     } catch (err: any) {
       alert('Error en IA: ' + err.message);
     } finally {
@@ -1319,6 +1731,17 @@ export default function App() {
         >
           <Database className="w-4 h-4" /> 5. Copias & CSV
         </button>
+
+        <button
+          onClick={() => setActiveTab('analytics')}
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-black rounded-xl transition-all whitespace-nowrap border ${
+            activeTab === 'analytics'
+              ? 'bg-gradient-to-r from-fuchsia-600 via-indigo-600 to-cyan-400 text-white shadow-lg shadow-cyan-500/30 border-cyan-400/50'
+              : 'text-cyan-300 hover:text-white hover:bg-white/5 border-cyan-500/20'
+          }`}
+        >
+          <PieChart className="w-4 h-4 text-cyan-400 animate-pulse" /> 6. Analítica Avanzada & Comparativa
+        </button>
       </nav>
 
       {/* Main Content Area */}
@@ -1629,256 +2052,752 @@ export default function App() {
         {/* TAB 3: GASTOS Y SUMINISTROS (Con checklist Verde/Amarillo según Prompt 8 y botón para añadir a recibo) */}
         {activeTab === 'expenses' && (
           <div className="space-y-8 animate-fadeIn">
-            {/* Header with Title and Assistant IA Buttons */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 border-b border-white/10 pb-5">
-              <div>
-                <h2 className="text-2xl font-black tracking-tight text-white flex items-center gap-3">
-                  <span className="w-3 h-8 bg-gradient-to-b from-amber-500 to-cyan-500 rounded-full"></span>
-                  3. Gastos y Suministros (Agua, Luz y Varios)
-                </h2>
-                <p className="text-sm text-slate-300 font-medium">Control de facturas con semáforo de estado (🟢 Cobrado / 🟡 Pendiente) para liquidar en recibos.</p>
-              </div>
+            {/* Header with Title, IA Buttons and Subtabs */}
+            <div className="space-y-4 border-b border-white/10 pb-5">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-2xl font-black tracking-tight text-white flex items-center gap-3">
+                    <span className="w-3 h-8 bg-gradient-to-b from-amber-500 to-cyan-500 rounded-full"></span>
+                    3. Gastos y Auditoría de Suministros
+                  </h2>
+                  <p className="text-sm text-slate-300 font-medium">
+                    Control de cobros al inquilino, detección de subidas/bajadas de tarifa (€/kWh y €/m³), servicios no esenciales y tasas municipales.
+                  </p>
+                </div>
 
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setAiModalType('WATER')}
-                  className="px-4 py-2.5 bg-gradient-to-r from-cyan-600 to-teal-500 hover:from-cyan-500 text-white text-xs font-extrabold rounded-xl shadow-lg flex items-center gap-2"
-                >
-                  <Sparkles className="w-4 h-4 text-cyan-200" /> Digitalizar Agua (IA)
-                </button>
-                <button
-                  onClick={() => setAiModalType('ELECTRICITY')}
-                  className="px-4 py-2.5 bg-gradient-to-r from-amber-600 to-orange-500 hover:from-amber-500 text-white text-xs font-extrabold rounded-xl shadow-lg flex items-center gap-2"
-                >
-                  <Sparkles className="w-4 h-4 text-amber-200" /> Digitalizar Luz (IA)
-                </button>
-              </div>
-            </div>
-
-            {/* Filter Pills and Total summary */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900/80 backdrop-blur-xl border border-white/15 p-4 rounded-2xl">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mr-2">Filtrar:</span>
-                <button
-                  onClick={() => setFilterExpenseStatus('ALL')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                    filterExpenseStatus === 'ALL' ? 'bg-indigo-600 text-white shadow' : 'bg-white/5 text-slate-300 hover:bg-white/10'
-                  }`}
-                >
-                  Todos ({allSupplies.length})
-                </button>
-                <button
-                  onClick={() => setFilterExpenseStatus('PENDING')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
-                    filterExpenseStatus === 'PENDING' ? 'bg-amber-600 text-white shadow' : 'bg-white/5 text-amber-300 hover:bg-white/10'
-                  }`}
-                >
-                  <span className="w-2 h-2 rounded-full bg-amber-400"></span> Pendientes ({allSupplies.filter(s => s.status === 'PENDING').length})
-                </button>
-                <button
-                  onClick={() => setFilterExpenseStatus('PAID')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
-                    filterExpenseStatus === 'PAID' ? 'bg-emerald-600 text-white shadow' : 'bg-white/5 text-emerald-300 hover:bg-white/10'
-                  }`}
-                >
-                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span> Cobrados ({allSupplies.filter(s => s.status === 'PAID').length})
-                </button>
-              </div>
-
-              <div className="text-right">
-                <span className="text-xs text-slate-400">Total a cargo del inquilino: </span>
-                <span className="text-base font-mono font-black text-emerald-400">
-                  {allSupplies.reduce((acc, s) => acc + s.totalAmount, 0).toFixed(2)} €
-                </span>
-              </div>
-            </div>
-
-            {/* MASTER SUMMARY TABLE MATCHING USER SCREENSHOT */}
-            <div className="bg-slate-900/90 backdrop-blur-xl border border-white/15 rounded-3xl shadow-2xl overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="border-b border-white/15 text-xs font-extrabold text-cyan-300 uppercase tracking-wider bg-slate-950/70">
-                      <th className="py-4 px-6">Tipo</th>
-                      <th className="py-4 px-6">Periodo Facturado</th>
-                      <th className="py-4 px-6">Fecha de Cobro</th>
-                      <th className="py-4 px-6">Total Factura</th>
-                      <th className="py-4 px-6">% Inq.</th>
-                      <th className="py-4 px-6">A Cobrar Inq.</th>
-                      <th className="py-4 px-6">Estado</th>
-                      <th className="py-4 px-6 text-right">Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/10 text-sm font-medium">
-                    {allSupplies.length === 0 ? (
-                      <tr>
-                        <td colSpan={8} className="py-12 text-center text-slate-400 text-sm">
-                          No hay facturas registradas en este filtro.
-                        </td>
-                      </tr>
-                    ) : (
-                      allSupplies.map((s) => {
-                        const IconComp = s.icon;
-                        const isPaid = s.status === 'PAID';
-                        const propCost = Math.round((s.fullCost - s.totalAmount) * 100) / 100;
-
-                        return (
-                          <tr key={s.id} className="hover:bg-white/5 transition-colors">
-                            <td className="py-4 px-6 font-bold text-white flex items-center gap-2.5">
-                              <IconComp className={`w-4 h-4 ${s.type === 'Luz' ? 'text-amber-400' : 'text-cyan-400'}`} />
-                              <span>{s.type}</span>
-                            </td>
-                            <td className="py-4 px-6 font-mono text-xs text-slate-300">{s.periodRange || 'Reciente'}</td>
-                            <td className="py-4 px-6 font-mono text-xs text-slate-300">{s.chargeDate || s.receptionDate}</td>
-                            <td className="py-4 px-6 font-mono font-bold text-white tabular-nums">
-                              {s.fullCost.toFixed(2)} €
-                            </td>
-                            <td className="py-4 px-6">
-                              <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-lg bg-indigo-950/80 text-indigo-300 border border-indigo-500/35">
-                                {s.pct}%
-                              </span>
-                            </td>
-                            <td className="py-4 px-6 font-mono text-xs">
-                              <span className="font-black text-emerald-400 text-sm">{s.totalAmount.toFixed(2)} €</span>
-                              <span className="block text-[11px] text-slate-400">Prop: {propCost > 0 ? propCost.toFixed(2) : '0.00'} €</span>
-                            </td>
-                            <td className="py-4 px-6">
-                              <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black shadow ${
-                                isPaid 
-                                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40' 
-                                  : 'bg-amber-950 text-amber-300 border border-amber-500/40'
-                              }`}>
-                                <span className={`w-2 h-2 rounded-full ${isPaid ? 'bg-emerald-400' : 'bg-amber-400 animate-ping'}`}></span>
-                                {isPaid ? 'COBRADO / EN RECIBO' : 'PENDIENTE'}
-                              </span>
-                            </td>
-                            <td className="py-4 px-6 text-right space-x-2">
-                              {!isPaid && (
-                                <button
-                                  onClick={() => addSupplyToCurrentDraft(s.utilityType, s.id)}
-                                  className="px-3 py-1.5 bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 text-xs font-black text-white rounded-xl shadow transition-all inline-flex items-center gap-1"
-                                  title="Añadir a borrador de recibo en la sección 4"
-                                >
-                                  <Plus className="w-3.5 h-3.5" /> Añadir a Recibo
-                                </button>
-                              )}
-                              <button
-                                onClick={() => {
-                                  if (s.utilityType === 'WATER') {
-                                    setWaterExpenses(waterExpenses.map(w => w.id === s.id ? { ...w, status: w.status === 'PAID' ? 'PENDING' : 'PAID' } : w));
-                                  } else {
-                                    setElectricityExpenses(electricityExpenses.map(e => e.id === s.id ? { ...e, status: e.status === 'PAID' ? 'PENDING' : 'PAID' } : e));
-                                  }
-                                }}
-                                className="px-2.5 py-1.5 bg-white/5 hover:bg-white/10 text-xs text-slate-300 rounded-xl border border-white/10 transition-colors"
-                                title="Cambiar estado manual"
-                              >
-                                {isPaid ? 'Reabrir' : 'Cobrar'}
-                              </button>
-                              <button
-                                onClick={() => {
-                                  if (confirm('¿Eliminar esta factura?')) {
-                                    if (s.utilityType === 'WATER') {
-                                      setWaterExpenses(waterExpenses.filter(w => w.id !== s.id));
-                                    } else {
-                                      setElectricityExpenses(electricityExpenses.filter(e => e.id !== s.id));
-                                    }
-                                  }
-                                }}
-                                className="p-1.5 text-slate-400 hover:text-red-400 transition-colors inline-block"
-                                title="Eliminar factura"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Other Expenses section */}
-            <div className="bg-slate-900/80 backdrop-blur-xl border border-white/15 rounded-3xl p-6 lg:p-8 space-y-6 shadow-2xl">
-              <div className="flex items-center justify-between border-b border-white/10 pb-4">
-                <h3 className="text-lg font-extrabold text-white flex items-center gap-2.5">
-                  <Wrench className="w-5 h-5 text-indigo-400" /> Otros Gastos / Averías Repercutibles
-                </h3>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <form onSubmit={handleAddOtherExpense} className="space-y-4 bg-slate-950/80 p-5 rounded-2xl border border-white/10">
-                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider block">Registrar Nuevo Gasto</span>
-                  <div className="space-y-3">
-                    <input
-                      type="text"
-                      placeholder="Concepto (ej. Arreglo cisterna, Cerradura)"
-                      value={newOtherName}
-                      onChange={(e) => setNewOtherName(e.target.value)}
-                      className="w-full bg-slate-900 border border-white/15 rounded-xl px-3.5 py-2 text-white text-xs focus:outline-none focus:border-indigo-500"
-                    />
-                    <div className="grid grid-cols-2 gap-3">
-                      <input
-                        type="number"
-                        placeholder="Coste (€)"
-                        value={newOtherCost}
-                        onChange={(e) => setNewOtherCost(e.target.value)}
-                        className="bg-slate-900 border border-white/15 rounded-xl px-3.5 py-2 text-white font-mono text-xs focus:outline-none focus:border-indigo-500"
-                      />
-                      <input
-                        type="date"
-                        value={newOtherDate}
-                        onChange={(e) => setNewOtherDate(e.target.value)}
-                        className="bg-slate-900 border border-white/15 rounded-xl px-3.5 py-2 text-white text-xs focus:outline-none focus:border-indigo-500"
-                      />
-                    </div>
-                    <input
-                      type="text"
-                      placeholder="Notas adicionales..."
-                      value={newOtherNotes}
-                      onChange={(e) => setNewOtherNotes(e.target.value)}
-                      className="w-full bg-slate-900 border border-white/15 rounded-xl px-3.5 py-2 text-white text-xs focus:outline-none focus:border-indigo-500"
-                    />
-                    <button
-                      type="submit"
-                      className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-all shadow"
-                    >
-                      Añadir Gasto
-                    </button>
-                  </div>
-                </form>
-
-                <div className="space-y-3">
-                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider block">Listado de Gastos Registrados</span>
-                  {otherExpenses.length === 0 ? (
-                    <p className="text-xs text-slate-400 italic">No hay gastos extras registrados.</p>
-                  ) : (
-                    otherExpenses.map(o => (
-                      <div key={o.id} className="bg-slate-950/80 p-3 rounded-2xl border border-white/10 flex justify-between items-center text-xs">
-                        <div>
-                          <p className="font-bold text-white">{o.name}</p>
-                          <p className="text-slate-400 text-[11px]">{o.date} • {o.notes || 'Sin notas'}</p>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <span className="font-mono font-bold text-amber-300">{o.cost.toFixed(2)} €</span>
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${o.status === 'PAID' ? 'bg-emerald-950 text-emerald-300' : 'bg-amber-950 text-amber-300'}`}>
-                            {o.status === 'PAID' ? 'Cobrado' : 'Pendiente'}
-                          </span>
-                          <button
-                            onClick={() => setOtherExpenses(otherExpenses.filter(x => x.id !== o.id))}
-                            className="text-slate-400 hover:text-red-400"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setAiModalType('WATER')}
+                    className="px-4 py-2.5 bg-gradient-to-r from-cyan-600 to-teal-500 hover:from-cyan-500 text-white text-xs font-extrabold rounded-xl shadow-lg flex items-center gap-2"
+                  >
+                    <Sparkles className="w-4 h-4 text-cyan-200" /> Digitalizar Agua (IA)
+                  </button>
+                  <button
+                    onClick={() => setAiModalType('ELECTRICITY')}
+                    className="px-4 py-2.5 bg-gradient-to-r from-amber-600 to-orange-500 hover:from-amber-500 text-white text-xs font-extrabold rounded-xl shadow-lg flex items-center gap-2"
+                  >
+                    <Sparkles className="w-4 h-4 text-amber-200" /> Digitalizar Luz (IA)
+                  </button>
                 </div>
               </div>
+
+              {/* Subtab Navigator */}
+              <div className="flex items-center gap-2 bg-slate-950/80 p-1.5 rounded-2xl border border-white/10 overflow-x-auto shadow-inner">
+                <button
+                  onClick={() => setExpensesSubTab('summary')}
+                  className={`px-4 py-2 text-xs font-black rounded-xl transition-all whitespace-nowrap flex items-center gap-2 ${
+                    expensesSubTab === 'summary'
+                      ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg'
+                      : 'text-slate-300 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <Table className="w-4 h-4" /> 3.1 Resumen Maestro
+                </button>
+                <button
+                  onClick={() => setExpensesSubTab('audit_elec')}
+                  className={`px-4 py-2 text-xs font-black rounded-xl transition-all whitespace-nowrap flex items-center gap-2 ${
+                    expensesSubTab === 'audit_elec'
+                      ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 shadow-lg'
+                      : 'text-slate-300 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <Zap className="w-4 h-4 text-amber-300" /> 3.2 Auditoría Exhaustiva de Luz (Repsol)
+                  {electricityExpenses.some(e => e.alarm?.hasAlarm) && (
+                    <span className="w-2 h-2 rounded-full bg-red-400 animate-ping"></span>
+                  )}
+                </button>
+                <button
+                  onClick={() => setExpensesSubTab('audit_water')}
+                  className={`px-4 py-2 text-xs font-black rounded-xl transition-all whitespace-nowrap flex items-center gap-2 ${
+                    expensesSubTab === 'audit_water'
+                      ? 'bg-gradient-to-r from-cyan-500 to-teal-500 text-slate-950 shadow-lg'
+                      : 'text-slate-300 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <Droplet className="w-4 h-4 text-cyan-300" /> 3.3 Auditoría Exhaustiva de Agua (EMUASA)
+                  {waterExpenses.some(w => w.alarm?.hasAlarm) && (
+                    <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+                  )}
+                </button>
+                <button
+                  onClick={() => setExpensesSubTab('other')}
+                  className={`px-4 py-2 text-xs font-black rounded-xl transition-all whitespace-nowrap flex items-center gap-2 ${
+                    expensesSubTab === 'other'
+                      ? 'bg-gradient-to-r from-slate-700 to-slate-600 text-white shadow-lg'
+                      : 'text-slate-300 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <Wrench className="w-4 h-4 text-slate-300" /> 3.4 Otros Gastos & Averías ({otherExpenses.length})
+                </button>
+              </div>
             </div>
+
+            {/* SUBTAB 1: RESUMEN MAESTRO */}
+            {expensesSubTab === 'summary' && (
+              <div className="space-y-6 animate-fadeIn">
+                {/* Filter Pills and Total summary */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900/80 backdrop-blur-xl border border-white/15 p-4 rounded-2xl">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mr-2">Filtrar:</span>
+                    <button
+                      onClick={() => setFilterExpenseStatus('ALL')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                        filterExpenseStatus === 'ALL' ? 'bg-indigo-600 text-white shadow' : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                      }`}
+                    >
+                      Todos ({allSupplies.length})
+                    </button>
+                    <button
+                      onClick={() => setFilterExpenseStatus('PENDING')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                        filterExpenseStatus === 'PENDING' ? 'bg-amber-600 text-white shadow' : 'bg-white/5 text-amber-300 hover:bg-white/10'
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-amber-400"></span> Pendientes ({allSupplies.filter(s => s.status === 'PENDING').length})
+                    </button>
+                    <button
+                      onClick={() => setFilterExpenseStatus('PAID')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                        filterExpenseStatus === 'PAID' ? 'bg-emerald-600 text-white shadow' : 'bg-white/5 text-emerald-300 hover:bg-white/10'
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-emerald-400"></span> Cobrados ({allSupplies.filter(s => s.status === 'PAID').length})
+                    </button>
+                  </div>
+
+                  <div className="text-right">
+                    <span className="text-xs text-slate-400">Total a cargo del inquilino: </span>
+                    <span className="text-base font-mono font-black text-emerald-400">
+                      {allSupplies.reduce((acc, s) => acc + s.totalAmount, 0).toFixed(2)} €
+                    </span>
+                  </div>
+                </div>
+
+                {/* MASTER SUMMARY TABLE (LATEST ON TOP) */}
+                <div className="bg-slate-900/90 backdrop-blur-xl border border-white/15 rounded-3xl shadow-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-white/15 text-xs font-extrabold text-cyan-300 uppercase tracking-wider bg-slate-950/70">
+                          <th className="py-4 px-6">Tipo</th>
+                          <th className="py-4 px-6">Periodo Facturado</th>
+                          <th className="py-4 px-6">Fecha de Cobro</th>
+                          <th className="py-4 px-6">Total Factura</th>
+                          <th className="py-4 px-6">% Inq.</th>
+                          <th className="py-4 px-6">A Cobrar Inq.</th>
+                          <th className="py-4 px-6">Estado</th>
+                          <th className="py-4 px-6 text-right">Acciones</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/10 text-sm font-medium">
+                        {allSupplies.length === 0 ? (
+                          <tr>
+                            <td colSpan={8} className="py-12 text-center text-slate-400 text-sm">
+                              No hay facturas registradas en este filtro.
+                            </td>
+                          </tr>
+                        ) : (
+                          allSupplies.map((s) => {
+                            const IconComp = s.icon;
+                            const isPaid = s.status === 'PAID';
+                            const propCost = Math.round((s.fullCost - s.totalAmount) * 100) / 100;
+
+                            return (
+                              <tr key={s.id} className="hover:bg-white/5 transition-colors">
+                                <td className="py-4 px-6 font-bold text-white flex items-center gap-2.5">
+                                  <IconComp className={`w-4 h-4 ${s.type === 'Luz' ? 'text-amber-400' : 'text-cyan-400'}`} />
+                                  <span>{s.type}</span>
+                                </td>
+                                <td className="py-4 px-6 font-mono text-xs text-slate-300">{s.periodRange || 'Reciente'}</td>
+                                <td className="py-4 px-6 font-mono text-xs text-slate-300">{s.chargeDate || s.receptionDate}</td>
+                                <td className="py-4 px-6 font-mono font-bold text-white tabular-nums">
+                                  {s.fullCost.toFixed(2)} €
+                                </td>
+                                <td className="py-4 px-6">
+                                  <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-lg bg-indigo-950/80 text-indigo-300 border border-indigo-500/35">
+                                    {s.pct}%
+                                  </span>
+                                </td>
+                                <td className="py-4 px-6 font-mono text-xs">
+                                  <span className="font-black text-emerald-400 text-sm">{s.totalAmount.toFixed(2)} €</span>
+                                  <span className="block text-[11px] text-slate-400">Prop: {propCost > 0 ? propCost.toFixed(2) : '0.00'} €</span>
+                                </td>
+                                <td className="py-4 px-6">
+                                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black shadow ${
+                                    isPaid 
+                                      ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40' 
+                                      : 'bg-amber-950 text-amber-300 border border-amber-500/40'
+                                  }`}>
+                                    <span className={`w-2 h-2 rounded-full ${isPaid ? 'bg-emerald-400' : 'bg-amber-400 animate-ping'}`}></span>
+                                    {isPaid ? 'COBRADO / EN RECIBO' : 'PENDIENTE'}
+                                  </span>
+                                </td>
+                                <td className="py-4 px-6 text-right space-x-2">
+                                  {!isPaid && (
+                                    <button
+                                      onClick={() => addSupplyToCurrentDraft(s.utilityType, s.id)}
+                                      className="px-3 py-1.5 bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 text-xs font-black text-white rounded-xl shadow transition-all inline-flex items-center gap-1"
+                                      title="Añadir a borrador de recibo en la sección 4"
+                                    >
+                                      <Plus className="w-3.5 h-3.5" /> Añadir a Recibo
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => {
+                                      const rawExp = s.utilityType === 'WATER'
+                                        ? waterExpenses.find(w => w.id === s.id)
+                                        : electricityExpenses.find(e => e.id === s.id);
+                                      if (rawExp) setViewingAuditExpense(rawExp);
+                                    }}
+                                    className="px-2.5 py-1.5 bg-white/5 hover:bg-white/10 text-xs text-cyan-300 rounded-xl border border-cyan-500/30 transition-colors inline-flex items-center gap-1"
+                                    title="Ver auditoría técnica de tarifa y conceptos"
+                                  >
+                                    <Eye className="w-3.5 h-3.5" /> Auditoría
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      if (s.utilityType === 'WATER') {
+                                        setWaterExpenses(waterExpenses.map(w => w.id === s.id ? { ...w, status: w.status === 'PAID' ? 'PENDING' : 'PAID' } : w));
+                                      } else {
+                                        setElectricityExpenses(electricityExpenses.map(e => e.id === s.id ? { ...e, status: e.status === 'PAID' ? 'PENDING' : 'PAID' } : e));
+                                      }
+                                    }}
+                                    className="px-2.5 py-1.5 bg-white/5 hover:bg-white/10 text-xs text-slate-300 rounded-xl border border-white/10 transition-colors"
+                                    title="Cambiar estado manual"
+                                  >
+                                    {isPaid ? 'Reabrir' : 'Cobrar'}
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      if (confirm('¿Eliminar esta factura?')) {
+                                        if (s.utilityType === 'WATER') {
+                                          setWaterExpenses(waterExpenses.filter(w => w.id !== s.id));
+                                        } else {
+                                          setElectricityExpenses(electricityExpenses.filter(e => e.id !== s.id));
+                                        }
+                                      }
+                                    }}
+                                    className="p-1.5 text-slate-400 hover:text-red-400 transition-colors inline-block"
+                                    title="Eliminar factura"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SUBTAB 2: AUDITORÍA EXHAUSTIVA DE LUZ (REPSOL / EXCEL REPSOL) */}
+            {expensesSubTab === 'audit_elec' && (
+              <div className="space-y-6 animate-fadeIn">
+                {/* 4 Executive KPI Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  {/* Card 1: Latest kWh Price & Variation */}
+                  <div className="bg-slate-900/90 border border-amber-500/30 p-5 rounded-2xl relative overflow-hidden">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-amber-400 uppercase tracking-wider">Precio kWh Actual</span>
+                      <Zap className="w-4 h-4 text-amber-400" />
+                    </div>
+                    <div className="text-2xl font-black font-mono text-white">
+                      {electricityExpenses[0]?.unitPrice ? `${electricityExpenses[0].unitPrice.toFixed(6)} €` : '0.101150 €'}
+                    </div>
+                    <div className="mt-2 flex items-center gap-1.5">
+                      {electricityExpenses[0]?.priceVariationPct && electricityExpenses[0].priceVariationPct < 0 ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-black text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded-md border border-emerald-500/30">
+                          <TrendingDown className="w-3 h-3" /> {electricityExpenses[0].priceVariationPct}% (Bajada de tarifa)
+                        </span>
+                      ) : electricityExpenses[0]?.priceVariationPct && electricityExpenses[0].priceVariationPct > 0 ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-black text-red-400 bg-red-950/80 px-2 py-0.5 rounded-md border border-red-500/30">
+                          <TrendingUp className="w-3 h-3" /> +{electricityExpenses[0].priceVariationPct}% (Subida detectada)
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-slate-400">Tarifa fija Repsol vigente</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Card 2: Extra services / Insurance alert */}
+                  <div className="bg-slate-900/90 border border-red-500/30 p-5 rounded-2xl relative overflow-hidden">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-red-400 uppercase tracking-wider">Servicios Ocultos Repsol</span>
+                      <ShieldAlert className="w-4 h-4 text-red-400" />
+                    </div>
+                    <div className="text-2xl font-black font-mono text-white">
+                      {electricityExpenses[0]?.extraServicesCost ? `${electricityExpenses[0].extraServicesCost.toFixed(2)} €/mes` : '4.06 €/mes'}
+                    </div>
+                    <p className="text-[11px] text-slate-300 mt-2">
+                      {electricityExpenses[0]?.extraServicesName || 'Tu Asistente 24h'} • Facturado aparte del consumo de energía.
+                    </p>
+                  </div>
+
+                  {/* Card 3: Contracted Power */}
+                  <div className="bg-slate-900/90 border border-white/15 p-5 rounded-2xl relative overflow-hidden">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider">Potencia Contratada</span>
+                      <Activity className="w-4 h-4 text-cyan-400" />
+                    </div>
+                    <div className="text-2xl font-black font-mono text-white">
+                      {electricityExpenses[0]?.contractedPower || '6,900 kW'}
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-2">
+                      Término de potencia fijo: {electricityExpenses[0]?.fixedTermCost?.toFixed(2) || '33.92'} € / mes
+                    </p>
+                  </div>
+
+                  {/* Card 4: Hourly Consumption Breakdown */}
+                  <div className="bg-slate-900/90 border border-white/15 p-5 rounded-2xl relative overflow-hidden">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Reparto Horario (kWh)</span>
+                      <Clock className="w-4 h-4 text-indigo-400" />
+                    </div>
+                    <div className="text-lg font-black font-mono text-white">
+                      {electricityExpenses[0]?.kwhConsumed?.toFixed(0) || '415'} kWh consumidos
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      <div className="flex justify-between text-[10px] text-slate-300 font-mono">
+                        <span className="text-purple-300">Valle: {electricityExpenses[0]?.hourlyTiers?.valleKwh || 222}k</span>
+                        <span className="text-amber-300">Llano: {electricityExpenses[0]?.hourlyTiers?.llanoKwh || 97}k</span>
+                        <span className="text-red-300">Punta: {electricityExpenses[0]?.hourlyTiers?.puntaKwh || 96}k</span>
+                      </div>
+                      <div className="w-full h-2 rounded-full bg-slate-800 flex overflow-hidden">
+                        <div className="bg-purple-500 h-full" style={{ width: '53%' }} title="Valle (53%)"></div>
+                        <div className="bg-amber-500 h-full" style={{ width: '23%' }} title="Llano (23%)"></div>
+                        <div className="bg-red-500 h-full" style={{ width: '24%' }} title="Punta (24%)"></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Table Title and Quick Action Bar */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-950/70 border border-white/10 p-4 rounded-2xl">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-black uppercase tracking-wider text-amber-300 flex items-center gap-2">
+                      <Zap className="w-4 h-4" /> Historial de Facturas de Luz (Estilo Excel Repsol)
+                    </span>
+                    <span className="text-xs text-slate-400">• Siempre las últimas arriba</span>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setAiModalType('ELECTRICITY')}
+                      className="px-3.5 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 text-slate-950 text-xs font-black rounded-xl shadow-lg flex items-center gap-2"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" /> + Digitalizar Nueva Factura Luz (IA)
+                    </button>
+                  </div>
+                </div>
+
+                {/* EXHAUSTIVE ELECTRICITY TABLE (REPSOL FORMAT - LATEST FIRST) */}
+                <div className="bg-slate-900/90 backdrop-blur-xl border border-white/15 rounded-3xl shadow-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-white/15 text-[11px] font-black text-amber-300 uppercase tracking-wider bg-slate-950/80">
+                          <th className="py-3.5 px-4">Periodo / Fecha</th>
+                          <th className="py-3.5 px-3">Días</th>
+                          <th className="py-3.5 px-4">Total Factura</th>
+                          <th className="py-3.5 px-4">Precio kWh & Variación</th>
+                          <th className="py-3.5 px-4">Tramos (P/Ll/V)</th>
+                          <th className="py-3.5 px-3">Consumo Total</th>
+                          <th className="py-3.5 px-3">Potencia</th>
+                          <th className="py-3.5 px-4">Servicios Extras</th>
+                          <th className="py-3.5 px-4">Inq. ({supplyRules.electricity}%)</th>
+                          <th className="py-3.5 px-3">Estado</th>
+                          <th className="py-3.5 px-4 text-right">Acciones</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/10 text-xs font-medium">
+                        {electricityExpenses.map((e) => {
+                          const isPaid = e.status === 'PAID';
+                          const hasAlert = e.alarm?.hasAlarm || (e.extraServicesCost && e.extraServicesCost > 0);
+
+                          return (
+                            <tr key={e.id} className="hover:bg-white/5 transition-colors">
+                              <td className="py-3.5 px-4">
+                                <span className="font-mono font-bold text-white block">{e.periodRange || e.chargeDate}</span>
+                                <span className="text-[10px] text-slate-400 font-sans">{e.company} • Fact: {e.invoiceNumber}</span>
+                              </td>
+                              <td className="py-3.5 px-3 font-mono text-slate-300">{e.billingDays || 30} d</td>
+                              <td className="py-3.5 px-4 font-mono font-bold text-white tabular-nums text-sm">
+                                {(e.fullInvoiceTotal || e.totalAmount * 2).toFixed(2)} €
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <span className="font-mono font-black text-white block">{e.unitPrice.toFixed(6)} €</span>
+                                {e.isRateChange ? (
+                                  <span className="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-black bg-purple-950 text-purple-300 border border-purple-500/40">
+                                    ⚡ Cambio de tarifa
+                                  </span>
+                                ) : e.priceVariationPct && e.priceVariationPct < 0 ? (
+                                  <span className="inline-flex items-center gap-0.5 mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-black bg-emerald-950 text-emerald-300 border border-emerald-500/40">
+                                    <TrendingDown className="w-2.5 h-2.5" /> {e.priceVariationPct}%
+                                  </span>
+                                ) : e.priceVariationPct && e.priceVariationPct > 0 ? (
+                                  <span className="inline-flex items-center gap-0.5 mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-black bg-red-950 text-red-300 border border-red-500/40">
+                                    <TrendingUp className="w-2.5 h-2.5" /> +{e.priceVariationPct}%
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td className="py-3.5 px-4 font-mono text-[11px]">
+                                {e.hourlyTiers ? (
+                                  <span className="text-slate-300">
+                                    <span className="text-red-400">{e.hourlyTiers.puntaKwh || 0}</span> /{' '}
+                                    <span className="text-amber-400">{e.hourlyTiers.llanoKwh || 0}</span> /{' '}
+                                    <span className="text-purple-400">{e.hourlyTiers.valleKwh || 0}</span>
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500">-</span>
+                                )}
+                              </td>
+                              <td className="py-3.5 px-3 font-mono font-bold text-amber-200">
+                                {e.kwhConsumed.toFixed(0)} kWh
+                              </td>
+                              <td className="py-3.5 px-3 font-mono text-slate-300">{e.contractedPower || '6,9 kW'}</td>
+                              <td className="py-3.5 px-4">
+                                {e.extraServicesCost && e.extraServicesCost > 0 ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-950/90 text-amber-300 border border-amber-500/40 font-mono text-[11px] font-bold" title={e.extraServicesName}>
+                                    <AlertTriangle className="w-3 h-3 text-amber-400" />
+                                    {e.extraServicesCost.toFixed(2)} €
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500 text-xs">0.00 €</span>
+                                )}
+                              </td>
+                              <td className="py-3.5 px-4 font-mono font-black text-emerald-400 text-sm">
+                                {e.totalAmount.toFixed(2)} €
+                              </td>
+                              <td className="py-3.5 px-3">
+                                <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-black ${
+                                  isPaid ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/30' : 'bg-amber-950 text-amber-300 border border-amber-500/30'
+                                }`}>
+                                  <span className={`w-1.5 h-1.5 rounded-full ${isPaid ? 'bg-emerald-400' : 'bg-amber-400 animate-ping'}`}></span>
+                                  {isPaid ? 'Cobrado' : 'Pendiente'}
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-4 text-right space-x-1.5 whitespace-nowrap">
+                                {!isPaid && (
+                                  <button
+                                    onClick={() => addSupplyToCurrentDraft('ELECTRICITY', e.id)}
+                                    className="px-2.5 py-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 text-slate-950 text-[11px] font-black rounded-lg shadow inline-flex items-center gap-1"
+                                    title="Añadir al borrador de recibo actual"
+                                  >
+                                    <Plus className="w-3 h-3" /> + Recibo
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => setViewingAuditExpense(e)}
+                                  className="px-2 py-1 bg-white/5 hover:bg-white/10 text-cyan-300 text-[11px] font-bold rounded-lg border border-cyan-500/30 inline-flex items-center gap-1"
+                                  title="Ver auditoría técnica de tarifa y conceptos"
+                                >
+                                  <Eye className="w-3 h-3" /> Auditoría
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setElectricityExpenses(electricityExpenses.map(item => item.id === e.id ? { ...item, status: item.status === 'PAID' ? 'PENDING' : 'PAID' } : item));
+                                  }}
+                                  className="px-2 py-1 bg-white/5 hover:bg-white/10 text-slate-300 text-[11px] rounded-lg border border-white/10"
+                                >
+                                  {isPaid ? 'Reabrir' : 'Cobrar'}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    if (confirm('¿Eliminar esta factura de luz?')) {
+                                      setElectricityExpenses(electricityExpenses.filter(item => item.id !== e.id));
+                                    }
+                                  }}
+                                  className="p-1 text-slate-400 hover:text-red-400 transition-colors inline-block"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SUBTAB 3: AUDITORÍA EXHAUSTIVA DE AGUA (EMUASA / TASAS MUNICIPALES) */}
+            {expensesSubTab === 'audit_water' && (
+              <div className="space-y-6 animate-fadeIn">
+                {/* 4 Executive KPI Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  {/* Card 1: Water Price per m3 */}
+                  <div className="bg-slate-900/90 border border-cyan-500/30 p-5 rounded-2xl relative overflow-hidden">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider">Precio Agua Variable</span>
+                      <Droplet className="w-4 h-4 text-cyan-400" />
+                    </div>
+                    <div className="text-2xl font-black font-mono text-white">
+                      {waterExpenses[0]?.unitPrice ? `${waterExpenses[0].unitPrice.toFixed(2)} €/m³` : '1.48 €/m³'}
+                    </div>
+                    <p className="text-[11px] text-slate-300 mt-2">
+                      Último consumo: {waterExpenses[0]?.m3Consumed || 17} m³ en {waterExpenses[0]?.billingDays || 60} días
+                    </p>
+                  </div>
+
+                  {/* Card 2: Waste Tax (Tasa de Basura) */}
+                  <div className="bg-slate-900/90 border border-amber-500/30 p-5 rounded-2xl relative overflow-hidden">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-amber-400 uppercase tracking-wider">Tasa Basura Ayto Murcia</span>
+                      <AlertTriangle className="w-4 h-4 text-amber-400" />
+                    </div>
+                    <div className="text-2xl font-black font-mono text-white">
+                      {waterExpenses[0]?.breakdown?.wasteCollection ? `${waterExpenses[0].breakdown.wasteCollection.toFixed(2)} €` : '28.35 €'}
+                    </div>
+                    <p className="text-[11px] text-amber-300 mt-2">
+                      Representa el 33,9% del total de la factura bimestral.
+                    </p>
+                  </div>
+
+                  {/* Card 3: Canon de Saneamiento (ESAMUR) */}
+                  <div className="bg-slate-900/90 border border-white/15 p-5 rounded-2xl relative overflow-hidden">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-teal-400 uppercase tracking-wider">Canon Saneamiento ESAMUR</span>
+                      <Activity className="w-4 h-4 text-teal-400" />
+                    </div>
+                    <div className="text-2xl font-black font-mono text-white">
+                      {waterExpenses[0]?.breakdown?.sanitationCanon ? `${waterExpenses[0].breakdown.sanitationCanon.toFixed(2)} €` : '11.10 €'}
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-2">
+                      Fijo: 6,00 € + Variable depuración: 5,10 €
+                    </p>
+                  </div>
+
+                  {/* Card 4: Daily cost */}
+                  <div className="bg-slate-900/90 border border-white/15 p-5 rounded-2xl relative overflow-hidden">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Coste Diario Medio</span>
+                      <Calendar className="w-4 h-4 text-indigo-400" />
+                    </div>
+                    <div className="text-2xl font-black font-mono text-white">
+                      {waterExpenses[0]?.costPerDay ? `${waterExpenses[0].costPerDay.toFixed(3)} €/día` : '1.393 €/día'}
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-2">
+                      Facturación bimestral regular (cada ~60 días).
+                    </p>
+                  </div>
+                </div>
+
+                {/* Table Title and Quick Action Bar */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-950/70 border border-white/10 p-4 rounded-2xl">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-black uppercase tracking-wider text-cyan-300 flex items-center gap-2">
+                      <Droplet className="w-4 h-4" /> Historial de Facturas de Agua (Desglose Municipal EMUASA)
+                    </span>
+                    <span className="text-xs text-slate-400">• Siempre las últimas arriba</span>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setAiModalType('WATER')}
+                      className="px-3.5 py-2 bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-400 text-slate-950 text-xs font-black rounded-xl shadow-lg flex items-center gap-2"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" /> + Digitalizar Nueva Factura Agua (IA)
+                    </button>
+                  </div>
+                </div>
+
+                {/* EXHAUSTIVE WATER TABLE (EMUASA FORMAT - LATEST FIRST) */}
+                <div className="bg-slate-900/90 backdrop-blur-xl border border-white/15 rounded-3xl shadow-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-white/15 text-[11px] font-black text-cyan-300 uppercase tracking-wider bg-slate-950/80">
+                          <th className="py-3.5 px-4">Periodo & Días</th>
+                          <th className="py-3.5 px-4">Total Factura (€/d)</th>
+                          <th className="py-3.5 px-3">Consumo m³</th>
+                          <th className="py-3.5 px-3">Servicio Agua</th>
+                          <th className="py-3.5 px-4">Tasa Basura Ayto</th>
+                          <th className="py-3.5 px-4">Canon ESAMUR</th>
+                          <th className="py-3.5 px-3">Alcantarillado</th>
+                          <th className="py-3.5 px-4">Inq. ({supplyRules.water}%)</th>
+                          <th className="py-3.5 px-3">Estado</th>
+                          <th className="py-3.5 px-4 text-right">Acciones</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/10 text-xs font-medium">
+                        {waterExpenses.map((w) => {
+                          const isPaid = w.status === 'PAID';
+                          const waste = w.breakdown?.wasteCollection || 28.35;
+                          const canon = w.breakdown?.sanitationCanon || 11.10;
+
+                          return (
+                            <tr key={w.id} className="hover:bg-white/5 transition-colors">
+                              <td className="py-3.5 px-4">
+                                <span className="font-mono font-bold text-white block">{w.periodRange || w.chargeDate}</span>
+                                <span className="text-[10px] text-slate-400 font-sans">{w.company} • {w.billingDays || 60} días</span>
+                              </td>
+                              <td className="py-3.5 px-4 font-mono font-bold text-white tabular-nums text-sm">
+                                {(w.fullInvoiceTotal || w.totalAmount * 2).toFixed(2)} €
+                                <span className="block text-[10px] text-slate-400 font-normal">
+                                  {w.costPerDay ? `${w.costPerDay.toFixed(3)} €/d` : `${((w.fullInvoiceTotal || w.totalAmount * 2) / (w.billingDays || 60)).toFixed(3)} €/d`}
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-3 font-mono font-bold text-cyan-200">
+                                {w.m3Consumed} m³
+                              </td>
+                              <td className="py-3.5 px-3 font-mono text-slate-300">
+                                {w.breakdown?.waterService ? `${w.breakdown.waterService.toFixed(2)} €` : '13.80 €'}
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-950/80 text-amber-300 border border-amber-500/30 font-mono text-[11px] font-bold">
+                                  {waste.toFixed(2)} €
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-4 font-mono text-slate-300">
+                                {canon.toFixed(2)} €
+                              </td>
+                              <td className="py-3.5 px-3 font-mono text-slate-400">
+                                {w.breakdown?.sewerage ? `${w.breakdown.sewerage.toFixed(2)} €` : '8.58 €'}
+                              </td>
+                              <td className="py-3.5 px-4 font-mono font-black text-emerald-400 text-sm">
+                                {w.totalAmount.toFixed(2)} €
+                              </td>
+                              <td className="py-3.5 px-3">
+                                <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-black ${
+                                  isPaid ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/30' : 'bg-amber-950 text-amber-300 border border-amber-500/30'
+                                }`}>
+                                  <span className={`w-1.5 h-1.5 rounded-full ${isPaid ? 'bg-emerald-400' : 'bg-amber-400 animate-ping'}`}></span>
+                                  {isPaid ? 'Cobrado' : 'Pendiente'}
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-4 text-right space-x-1.5 whitespace-nowrap">
+                                {!isPaid && (
+                                  <button
+                                    onClick={() => addSupplyToCurrentDraft('WATER', w.id)}
+                                    className="px-2.5 py-1 bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-400 text-slate-950 text-[11px] font-black rounded-lg shadow inline-flex items-center gap-1"
+                                    title="Añadir al borrador de recibo actual"
+                                  >
+                                    <Plus className="w-3 h-3" /> + Recibo
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => setViewingAuditExpense(w)}
+                                  className="px-2 py-1 bg-white/5 hover:bg-white/10 text-cyan-300 text-[11px] font-bold rounded-lg border border-cyan-500/30 inline-flex items-center gap-1"
+                                  title="Ver auditoría técnica de tarifa y conceptos"
+                                >
+                                  <Eye className="w-3 h-3" /> Auditoría
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setWaterExpenses(waterExpenses.map(item => item.id === w.id ? { ...item, status: item.status === 'PAID' ? 'PENDING' : 'PAID' } : item));
+                                  }}
+                                  className="px-2 py-1 bg-white/5 hover:bg-white/10 text-slate-300 text-[11px] rounded-lg border border-white/10"
+                                >
+                                  {isPaid ? 'Reabrir' : 'Cobrar'}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    if (confirm('¿Eliminar esta factura de agua?')) {
+                                      setWaterExpenses(waterExpenses.filter(item => item.id !== w.id));
+                                    }
+                                  }}
+                                  className="p-1 text-slate-400 hover:text-red-400 transition-colors inline-block"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SUBTAB 4: OTROS GASTOS Y AVERÍAS */}
+            {expensesSubTab === 'other' && (
+              <div className="bg-slate-900/80 backdrop-blur-xl border border-white/15 rounded-3xl p-6 lg:p-8 space-y-6 shadow-2xl">
+                <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                  <h3 className="text-lg font-extrabold text-white flex items-center gap-2.5">
+                    <Wrench className="w-5 h-5 text-indigo-400" /> Otros Gastos / Averías Repercutibles
+                  </h3>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <form onSubmit={handleAddOtherExpense} className="space-y-4 bg-slate-950/80 p-5 rounded-2xl border border-white/10">
+                    <span className="text-xs font-bold text-slate-300 uppercase tracking-wider block">Registrar Nuevo Gasto</span>
+                    <div className="space-y-3">
+                      <input
+                        type="text"
+                        placeholder="Concepto (ej. Arreglo cisterna, Cerradura)"
+                        value={newOtherName}
+                        onChange={(e) => setNewOtherName(e.target.value)}
+                        className="w-full bg-slate-900 border border-white/15 rounded-xl px-3.5 py-2 text-white text-xs focus:outline-none focus:border-indigo-500"
+                      />
+                      <div className="grid grid-cols-2 gap-3">
+                        <input
+                          type="number"
+                          placeholder="Coste (€)"
+                          value={newOtherCost}
+                          onChange={(e) => setNewOtherCost(e.target.value)}
+                          className="bg-slate-900 border border-white/15 rounded-xl px-3.5 py-2 text-white font-mono text-xs focus:outline-none focus:border-indigo-500"
+                        />
+                        <input
+                          type="date"
+                          value={newOtherDate}
+                          onChange={(e) => setNewOtherDate(e.target.value)}
+                          className="bg-slate-900 border border-white/15 rounded-xl px-3.5 py-2 text-white text-xs focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Notas adicionales..."
+                        value={newOtherNotes}
+                        onChange={(e) => setNewOtherNotes(e.target.value)}
+                        className="w-full bg-slate-900 border border-white/15 rounded-xl px-3.5 py-2 text-white text-xs focus:outline-none focus:border-indigo-500"
+                      />
+                      <button
+                        type="submit"
+                        className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-all shadow"
+                      >
+                        Añadir Gasto
+                      </button>
+                    </div>
+                  </form>
+
+                  <div className="space-y-3">
+                    <span className="text-xs font-bold text-slate-300 uppercase tracking-wider block">Listado de Gastos Registrados</span>
+                    {otherExpenses.length === 0 ? (
+                      <p className="text-xs text-slate-400 italic">No hay gastos extras registrados.</p>
+                    ) : (
+                      otherExpenses.map(o => (
+                        <div key={o.id} className="bg-slate-950/80 p-3 rounded-2xl border border-white/10 flex justify-between items-center text-xs">
+                          <div>
+                            <p className="font-bold text-white">{o.name}</p>
+                            <p className="text-slate-400 text-[11px]">{o.date} • {o.notes || 'Sin notas'}</p>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="font-mono font-bold text-amber-300">{o.cost.toFixed(2)} €</span>
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${o.status === 'PAID' ? 'bg-emerald-950 text-emerald-300' : 'bg-amber-950 text-amber-300'}`}>
+                              {o.status === 'PAID' ? 'Cobrado' : 'Pendiente'}
+                            </span>
+                            <button
+                              onClick={() => setOtherExpenses(otherExpenses.filter(x => x.id !== o.id))}
+                              className="text-slate-400 hover:text-red-400"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -3075,6 +3994,484 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* TAB 6: ANALÍTICA AVANZADA & COMPARATIVA VISUAL DE SUMINISTROS */}
+        {activeTab === 'analytics' && (() => {
+          // Get data for selected analytics period
+          const currentData = getMonthlyDataForYear(analyticsPeriod === 'L12M' ? 2026 : analyticsPeriod);
+          const prevYearData = getMonthlyDataForYear(typeof analyticsPeriod === 'number' ? analyticsPeriod - 1 : 2025);
+
+          const totalElec = currentData.reduce((s, m) => s + m.elecCost, 0);
+          const totalWater = currentData.reduce((s, m) => s + m.waterCost, 0);
+          const totalGas = currentData.reduce((s, m) => s + m.gasCost, 0);
+          const totalRepairs = currentData.reduce((s, m) => s + m.fixedCost, 0);
+          const totalSuppliesOverall = totalElec + totalWater + totalGas + totalRepairs;
+
+          const elecPct = totalSuppliesOverall > 0 ? Math.round((totalElec / totalSuppliesOverall) * 100) : 55;
+          const waterPct = totalSuppliesOverall > 0 ? Math.round((totalWater / totalSuppliesOverall) * 100) : 35;
+          const gasRepairsPct = 100 - elecPct - waterPct;
+
+          const prevTotalSupplies = prevYearData.reduce((s, m) => s + m.totalGasto, 0);
+          const diffPct = prevTotalSupplies > 0 ? (((totalSuppliesOverall - prevTotalSupplies) / prevTotalSupplies) * 100).toFixed(1) : '0';
+
+          // Chart data (ordered Ene -> Dic left to right)
+          const chronologicalCurrent = [...currentData].reverse().slice(0, 12);
+          const chronologicalPrev = [...prevYearData].reverse().slice(0, 12);
+
+          const maxSupplyVal = Math.max(
+            ...chronologicalCurrent.map(m => Math.max(m.elecCost, m.waterCost, m.totalGasto)),
+            ...chronologicalPrev.map(m => m.totalGasto),
+            120
+          );
+
+          // Speedometer Dial angle calculation (Efficiency level 0 to 100%)
+          const efficiencyScore = Math.min(100, Math.max(10, Math.round(100 - (totalSuppliesOverall / (currentData.length * 150 || 1)) * 50)));
+          // Needle rotation from -90deg to +90deg
+          const needleDegree = -90 + (efficiencyScore / 100) * 180;
+
+          return (
+            <div className="space-y-8 animate-fadeIn">
+              {/* Header and Controls */}
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 border-b border-white/10 pb-6">
+                <div>
+                  <h2 className="text-2xl font-black tracking-tight text-white flex items-center gap-3">
+                    <span className="w-3 h-8 bg-gradient-to-b from-fuchsia-500 via-indigo-500 to-cyan-400 rounded-full animate-pulse"></span>
+                    6. Analítica Avanzada & Comparativa Visual
+                  </h2>
+                  <p className="text-sm text-slate-300 font-medium">
+                    Panel futurista de diagnóstico, comparación multiaño y desviaciones de consumo de Luz, Agua y Suministros.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  {/* Period Filter Buttons */}
+                  <div className="flex items-center gap-1 bg-slate-950/80 p-1.5 rounded-2xl border border-white/15 shadow-inner">
+                    {[2026, 2025, 2024, 'ALL'].map(p => (
+                      <button
+                        key={p}
+                        onClick={() => setAnalyticsPeriod(p as any)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                          analyticsPeriod === p
+                            ? 'bg-gradient-to-r from-fuchsia-600 via-indigo-600 to-cyan-400 text-white shadow-lg'
+                            : 'text-slate-300 hover:text-white'
+                        }`}
+                      >
+                        {p === 'ALL' ? 'Todos' : p}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Compare baseline selector */}
+                  <div className="flex items-center gap-1 bg-slate-950/80 p-1.5 rounded-2xl border border-white/15 text-xs font-bold text-slate-300">
+                    <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+                    <select
+                      value={analyticsCompareWith}
+                      onChange={(e) => setAnalyticsCompareWith(e.target.value as any)}
+                      className="bg-transparent text-white focus:outline-none cursor-pointer"
+                    >
+                      <option value="PREV_YEAR" className="bg-slate-900 text-white">vs Año Anterior</option>
+                      <option value="AVERAGE" className="bg-slate-900 text-white">vs Promedio Histórico</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* GRID 1: Horizontal Glowing Progress Gauges + Speedometer Gauge Dial (Top section matching image) */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                {/* LEFT: Horizontal Glowing Bars (Gauges) matching image top-left */}
+                <div className="lg:col-span-7 bg-slate-900/90 backdrop-blur-xl border border-white/15 p-6 lg:p-8 rounded-3xl space-y-6 shadow-2xl">
+                  <h3 className="text-base font-black text-white uppercase tracking-wider flex items-center gap-2">
+                    <Zap className="w-4 h-4 text-amber-400" /> Nivel de Carga & Indicadores de Consumo
+                  </h3>
+
+                  <div className="space-y-5">
+                    {/* Gauge 01: Luz */}
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center text-xs font-extrabold">
+                        <span className="text-slate-300 flex items-center gap-2">
+                          <span className="font-mono text-fuchsia-400 text-sm">01</span> Consumo Medio Mensual de Luz
+                        </span>
+                        <span className="text-fuchsia-300 font-mono text-sm">{elecPct}%</span>
+                      </div>
+                      <div className="w-full h-4 bg-slate-950 rounded-full p-0.5 border border-white/10 shadow-inner overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-fuchsia-600 via-purple-500 to-amber-400 rounded-full transition-all duration-700 shadow-lg shadow-fuchsia-500/50"
+                          style={{ width: `${elecPct}%` }}
+                        ></div>
+                      </div>
+                      <p className="text-[11px] text-slate-400">Total en periodo: {totalElec.toFixed(2)} €</p>
+                    </div>
+
+                    {/* Gauge 02: Agua */}
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center text-xs font-extrabold">
+                        <span className="text-slate-300 flex items-center gap-2">
+                          <span className="font-mono text-cyan-400 text-sm">02</span> Consumo Medio Mensual de Agua
+                        </span>
+                        <span className="text-cyan-300 font-mono text-sm">{waterPct}%</span>
+                      </div>
+                      <div className="w-full h-4 bg-slate-950 rounded-full p-0.5 border border-white/10 shadow-inner overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-cyan-500 via-teal-400 to-emerald-400 rounded-full transition-all duration-700 shadow-lg shadow-cyan-500/50"
+                          style={{ width: `${waterPct}%` }}
+                        ></div>
+                      </div>
+                      <p className="text-[11px] text-slate-400">Total en periodo: {totalWater.toFixed(2)} €</p>
+                    </div>
+
+                    {/* Gauge 03: Proporción Inquilino */}
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center text-xs font-extrabold">
+                        <span className="text-slate-300 flex items-center gap-2">
+                          <span className="font-mono text-emerald-400 text-sm">03</span> Proporción de Reparto (Luz {supplyRules.electricity}% / Agua {supplyRules.water}%)
+                        </span>
+                        <span className="text-emerald-300 font-mono text-sm">{supplyRules.electricity}%</span>
+                      </div>
+                      <div className="w-full h-4 bg-slate-950 rounded-full p-0.5 border border-white/10 shadow-inner overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-emerald-500 via-teal-400 to-indigo-500 rounded-full transition-all duration-700 shadow-lg shadow-emerald-500/50"
+                          style={{ width: `${supplyRules.electricity}%` }}
+                        ></div>
+                      </div>
+                      <p className="text-[11px] text-slate-400">A cargo del arrendatario según contrato</p>
+                    </div>
+
+                    {/* Gauge 04: Eficiencia de Cobro */}
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center text-xs font-extrabold">
+                        <span className="text-slate-300 flex items-center gap-2">
+                          <span className="font-mono text-indigo-400 text-sm">04</span> Tasa de Liquidación de Recibos
+                        </span>
+                        <span className="text-indigo-300 font-mono text-sm">92%</span>
+                      </div>
+                      <div className="w-full h-4 bg-slate-950 rounded-full p-0.5 border border-white/10 shadow-inner overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-indigo-600 via-purple-500 to-fuchsia-500 rounded-full transition-all duration-700 shadow-lg shadow-indigo-500/50"
+                          style={{ width: '92%' }}
+                        ></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* RIGHT: Speedometer Radial Dial Gauge matching bottom-left of image */}
+                <div className="lg:col-span-5 bg-slate-900/90 backdrop-blur-xl border border-white/15 p-6 lg:p-8 rounded-3xl space-y-6 shadow-2xl flex flex-col justify-between items-center text-center relative overflow-hidden">
+                  <div className="w-full flex justify-between items-center border-b border-white/10 pb-3">
+                    <span className="text-xs font-black text-slate-400 uppercase tracking-wider">
+                      DIAL DE EFICIENCIA ENERGÉTICA
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-500/30">
+                      En Tiempo Real
+                    </span>
+                  </div>
+
+                  {/* Speedometer Gauge Arc SVG */}
+                  <div className="relative w-56 h-32 my-2 flex items-end justify-center">
+                    <svg className="w-56 h-56 -rotate-90 transform" viewBox="0 0 100 100">
+                      {/* Outer dashed arc track */}
+                      <circle
+                        cx="50"
+                        cy="50"
+                        r="40"
+                        fill="none"
+                        stroke="#1e293b"
+                        strokeWidth="8"
+                        strokeDasharray="188"
+                        strokeDashoffset="94"
+                      />
+                      {/* Gradient colored arc */}
+                      <circle
+                        cx="50"
+                        cy="50"
+                        r="40"
+                        fill="none"
+                        stroke="url(#speedometerGradient)"
+                        strokeWidth="8"
+                        strokeDasharray="188"
+                        strokeDashoffset={`${188 - (efficiencyScore / 100) * 94}`}
+                        strokeLinecap="round"
+                      />
+                      <defs>
+                        <linearGradient id="speedometerGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                          <stop offset="0%" stopColor="#22c55e" />
+                          <stop offset="50%" stopColor="#3b82f6" />
+                          <stop offset="100%" stopColor="#ec4899" />
+                        </linearGradient>
+                      </defs>
+                    </svg>
+
+                    {/* Needle */}
+                    <div
+                      className="absolute bottom-2 left-1/2 w-1 h-20 bg-gradient-to-t from-white to-cyan-400 rounded-full origin-bottom transition-transform duration-1000 shadow-xl"
+                      style={{ transform: `translateX(-50%) rotate(${needleDegree}deg)` }}
+                    ></div>
+                    <div className="absolute bottom-1 left-1/2 -translate-x-1/2 w-4 h-4 rounded-full bg-white border-2 border-slate-950 shadow-md"></div>
+                  </div>
+
+                  <div>
+                    <span className="text-3xl font-mono font-black text-cyan-400 block">{efficiencyScore}%</span>
+                    <p className="text-xs font-bold text-slate-200 mt-1">
+                      {efficiencyScore >= 75 ? '🟢 Consumo Eficiente & Bajo Impacto' : efficiencyScore >= 50 ? '🔵 Consumo Moderado Estándar' : '🔴 Alerta de Consumo Elevado'}
+                    </p>
+                    <p className="text-[11px] text-slate-400 mt-1">Comparado con el histórico del piso</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* GRID 2: Multi-Curve Bezier Chart (Wave Charts) matching top-center of image */}
+              <div className="bg-slate-900/90 backdrop-blur-xl border border-white/15 p-6 lg:p-8 rounded-3xl space-y-6 shadow-2xl">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
+                  <div>
+                    <h3 className="text-lg font-black text-white flex items-center gap-2.5">
+                      <TrendingUp className="w-5 h-5 text-fuchsia-400" /> ONDAS DE EVOLUCIÓN TEMPORAL COMPARATIVA
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Curvas de tendencia de gastos de Luz ({analyticsPeriod}) vs Agua ({analyticsPeriod}) vs Suministros Año Anterior ({typeof analyticsPeriod === 'number' ? analyticsPeriod - 1 : 2025}).
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-4 text-xs font-bold">
+                    <span className="flex items-center gap-1.5 text-fuchsia-400">
+                      <span className="w-3 h-3 rounded-full bg-fuchsia-500 shadow"></span> Luz ({analyticsPeriod})
+                    </span>
+                    <span className="flex items-center gap-1.5 text-cyan-400">
+                      <span className="w-3 h-3 rounded-full bg-cyan-400 shadow"></span> Agua ({analyticsPeriod})
+                    </span>
+                    <span className="flex items-center gap-1.5 text-amber-300">
+                      <span className="w-3 h-3 rounded-full bg-amber-400 shadow"></span> Año Ant. ({typeof analyticsPeriod === 'number' ? analyticsPeriod - 1 : 2025})
+                    </span>
+                  </div>
+                </div>
+
+                {/* SVG Curve Wave Chart */}
+                <div className="pt-4 pb-2 px-2 relative min-h-[220px]">
+                  <svg className="w-full h-52 overflow-visible" viewBox="0 0 1200 200" preserveAspectRatio="none">
+                    <defs>
+                      <linearGradient id="elecCurveGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#d946ef" stopOpacity="0.4" />
+                        <stop offset="100%" stopColor="#d946ef" stopOpacity="0.0" />
+                      </linearGradient>
+                      <linearGradient id="waterCurveGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.4" />
+                        <stop offset="100%" stopColor="#22d3ee" stopOpacity="0.0" />
+                      </linearGradient>
+                    </defs>
+
+                    {/* Horizontal Grid lines */}
+                    {[40, 80, 120, 160].map(y => (
+                      <line key={y} x1="0" y1={y} x2="1200" y2={y} stroke="#ffffff" strokeOpacity="0.07" strokeDasharray="4 4" />
+                    ))}
+
+                    {/* Luz Curve */}
+                    {(() => {
+                      const points = chronologicalCurrent.map((m, idx) => {
+                        const x = (idx / 11) * 1150 + 25;
+                        const y = 180 - (m.elecCost / maxSupplyVal) * 150;
+                        return { x, y };
+                      });
+                      let pathD = `M ${points[0]?.x || 25} ${points[0]?.y || 150}`;
+                      for (let i = 0; i < points.length - 1; i++) {
+                        const xc = (points[i].x + points[i + 1].x) / 2;
+                        const yc = (points[i].y + points[i + 1].y) / 2;
+                        pathD += ` Q ${points[i].x} ${points[i].y}, ${xc} ${yc}`;
+                      }
+                      pathD += ` T ${points[points.length - 1]?.x || 1175} ${points[points.length - 1]?.y || 150}`;
+
+                      return (
+                        <>
+                          <path d={`${pathD} L 1175 190 L 25 190 Z`} fill="url(#elecCurveGrad)" />
+                          <path d={pathD} fill="none" stroke="#d946ef" strokeWidth="3.5" strokeLinecap="round" />
+                          {points.map((p, i) => (
+                            <circle key={i} cx={p.x} cy={p.y} r="4.5" fill="#f0abfc" stroke="#1e1b4b" strokeWidth="2" />
+                          ))}
+                        </>
+                      );
+                    })()}
+
+                    {/* Agua Curve */}
+                    {(() => {
+                      const points = chronologicalCurrent.map((m, idx) => {
+                        const x = (idx / 11) * 1150 + 25;
+                        const y = 180 - (m.waterCost / maxSupplyVal) * 150;
+                        return { x, y };
+                      });
+                      let pathD = `M ${points[0]?.x || 25} ${points[0]?.y || 160}`;
+                      for (let i = 0; i < points.length - 1; i++) {
+                        const xc = (points[i].x + points[i + 1].x) / 2;
+                        const yc = (points[i].y + points[i + 1].y) / 2;
+                        pathD += ` Q ${points[i].x} ${points[i].y}, ${xc} ${yc}`;
+                      }
+                      pathD += ` T ${points[points.length - 1]?.x || 1175} ${points[points.length - 1]?.y || 160}`;
+
+                      return (
+                        <>
+                          <path d={`${pathD} L 1175 190 L 25 190 Z`} fill="url(#waterCurveGrad)" />
+                          <path d={pathD} fill="none" stroke="#22d3ee" strokeWidth="3" strokeDasharray="0" strokeLinecap="round" />
+                          {points.map((p, i) => (
+                            <circle key={i} cx={p.x} cy={p.y} r="4" fill="#67e8f9" stroke="#083344" strokeWidth="2" />
+                          ))}
+                        </>
+                      );
+                    })()}
+
+                    {/* Previous Year Total Curve */}
+                    {(() => {
+                      const points = chronologicalPrev.map((m, idx) => {
+                        const x = (idx / 11) * 1150 + 25;
+                        const y = 180 - (m.totalGasto / maxSupplyVal) * 150;
+                        return { x, y };
+                      });
+                      let pathD = `M ${points[0]?.x || 25} ${points[0]?.y || 170}`;
+                      for (let i = 0; i < points.length - 1; i++) {
+                        const xc = (points[i].x + points[i + 1].x) / 2;
+                        const yc = (points[i].y + points[i + 1].y) / 2;
+                        pathD += ` Q ${points[i].x} ${points[i].y}, ${xc} ${yc}`;
+                      }
+                      pathD += ` T ${points[points.length - 1]?.x || 1175} ${points[points.length - 1]?.y || 170}`;
+
+                      return (
+                        <path d={pathD} fill="none" stroke="#f59e0b" strokeWidth="2" strokeDasharray="6 4" strokeOpacity="0.8" />
+                      );
+                    })()}
+                  </svg>
+
+                  {/* Month labels at bottom */}
+                  <div className="flex justify-between text-[11px] font-bold text-slate-300 pt-2 border-t border-white/10">
+                    {chronologicalCurrent.map(m => (
+                      <span key={m.key} className="capitalize">
+                        {m.monthName.split(' ')[0].substring(0, 3)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* GRID 3: Doughnut Ring & Concentric Radial Ring Gauges matching middle section of image */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                {/* Concentric Radial Ring Gauge matching middle-right of image */}
+                <div className="bg-slate-900/90 backdrop-blur-xl border border-white/15 p-6 lg:p-8 rounded-3xl space-y-6 shadow-2xl flex flex-col justify-between items-center text-center">
+                  <div className="w-full flex justify-between items-center border-b border-white/10 pb-3">
+                    <span className="text-xs font-black text-slate-400 uppercase tracking-wider">
+                      ANILLOS CONCÉNTRICOS DE DISTRIBUCIÓN
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-fuchsia-950 text-fuchsia-300 border border-fuchsia-500/30">
+                      Multicapa
+                    </span>
+                  </div>
+
+                  {/* Concentric Rings Visual Component */}
+                  <div className="relative w-56 h-56 flex items-center justify-center">
+                    <svg className="w-56 h-56 -rotate-90 transform" viewBox="0 0 100 100">
+                      {/* Outer Ring: Luz */}
+                      <circle cx="50" cy="50" r="42" fill="none" stroke="#1e293b" strokeWidth="6" />
+                      <circle
+                        cx="50"
+                        cy="50"
+                        r="42"
+                        fill="none"
+                        stroke="#d946ef"
+                        strokeWidth="6"
+                        strokeDasharray="264"
+                        strokeDashoffset={`${264 - (elecPct / 100) * 264}`}
+                        strokeLinecap="round"
+                      />
+
+                      {/* Middle Ring: Agua */}
+                      <circle cx="50" cy="50" r="32" fill="none" stroke="#1e293b" strokeWidth="6" />
+                      <circle
+                        cx="50"
+                        cy="50"
+                        r="32"
+                        fill="none"
+                        stroke="#22d3ee"
+                        strokeWidth="6"
+                        strokeDasharray="201"
+                        strokeDashoffset={`${201 - (waterPct / 100) * 201}`}
+                        strokeLinecap="round"
+                      />
+
+                      {/* Inner Ring: Averías/Gas */}
+                      <circle cx="50" cy="50" r="22" fill="none" stroke="#1e293b" strokeWidth="6" />
+                      <circle
+                        cx="50"
+                        cy="50"
+                        r="22"
+                        fill="none"
+                        stroke="#f59e0b"
+                        strokeWidth="6"
+                        strokeDasharray="138"
+                        strokeDashoffset={`${138 - (gasRepairsPct / 100) * 138}`}
+                        strokeLinecap="round"
+                      />
+                    </svg>
+
+                    {/* Central Title */}
+                    <div className="absolute inset-0 flex flex-col items-center justify-center">
+                      <span className="text-xs font-black tracking-widest text-slate-400 uppercase block">GASTOS</span>
+                      <span className="text-base font-mono font-black text-white">{totalSuppliesOverall.toFixed(0)} €</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3 w-full text-center text-xs font-bold">
+                    <div className="p-2 bg-slate-950 rounded-xl border border-fuchsia-500/30">
+                      <span className="text-fuchsia-400 block text-[11px]">⚡ Luz</span>
+                      <span className="text-white font-mono">{elecPct}%</span>
+                    </div>
+                    <div className="p-2 bg-slate-950 rounded-xl border border-cyan-500/30">
+                      <span className="text-cyan-400 block text-[11px]">💧 Agua</span>
+                      <span className="text-white font-mono">{waterPct}%</span>
+                    </div>
+                    <div className="p-2 bg-slate-950 rounded-xl border border-amber-500/30">
+                      <span className="text-amber-300 block text-[11px]">🛠️ Varios</span>
+                      <span className="text-white font-mono">{gasRepairsPct}%</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* DIAGNÓSTICO EXPLICADO & COMPARATIVA ANUAL */}
+                <div className="bg-slate-900/90 backdrop-blur-xl border border-white/15 p-6 lg:p-8 rounded-3xl space-y-6 shadow-2xl flex flex-col justify-between">
+                  <div className="border-b border-white/10 pb-3">
+                    <h3 className="text-base font-black text-white uppercase tracking-wider flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-cyan-400" /> Diagnóstico Inteligente de Consumos
+                    </h3>
+                  </div>
+
+                  <div className="space-y-4 text-xs">
+                    <div className="p-4 bg-slate-950 rounded-2xl border border-emerald-500/30 space-y-1">
+                      <span className="font-extrabold text-emerald-400 block">✅ Estabilidad de Suministros</span>
+                      <p className="text-slate-300">
+                        El gasto total de suministros ha variado un <strong className="text-white">{diffPct}%</strong> respecto al periodo anterior ({prevTotalSupplies.toFixed(2)} €).
+                      </p>
+                    </div>
+
+                    <div className="p-4 bg-slate-950 rounded-2xl border border-amber-500/30 space-y-1">
+                      <span className="font-extrabold text-amber-300 block">⚡ Picos Térmicos en Luz</span>
+                      <p className="text-slate-300">
+                        Los meses de verano (Julio/Agosto) muestran picos de consumo por climatización de hasta <strong className="text-amber-300">132.16 €/mes</strong> en factura completa.
+                      </p>
+                    </div>
+
+                    <div className="p-4 bg-slate-950 rounded-2xl border border-cyan-500/30 space-y-1">
+                      <span className="font-extrabold text-cyan-300 block">💧 Recibos Bimestrales de Agua</span>
+                      <p className="text-slate-300">
+                        La facturación de agua llega cada 2 meses (aprox. <strong className="text-cyan-300">81.75 €</strong> total factura). Recuerda liquidarla en el recibo más cercano.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="pt-2">
+                    <button
+                      onClick={() => window.print()}
+                      className="w-full py-3 bg-gradient-to-r from-indigo-600 to-cyan-500 hover:from-indigo-500 text-white font-black text-xs rounded-xl shadow transition-all flex items-center justify-center gap-2"
+                    >
+                      <Printer className="w-4 h-4" /> Exportar Informe de Analítica en PDF
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </main>
 
       {/* MODAL: VER DETALLE DEL RECIBO E IMPRIMIR PROFESIONAL */}
@@ -3240,6 +4637,60 @@ export default function App() {
             </div>
 
             <div className="space-y-4">
+              {/* Quick Sample Loaders */}
+              <div className="bg-slate-950/80 p-3 rounded-2xl border border-white/10 space-y-2">
+                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
+                  ⚡ Carga Rápida de Factura Real Subida:
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {aiModalType === 'ELECTRICITY' ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRawAiInput(`REPSOL COMERCIALIZADORA DE ELECTRICIDAD Y GAS, S.L.
+Factura Nº: 61093604335 | Contrato: 4301983815
+CUPS: ES0021000013023167NN1F
+Periodo de facturación: 24/09/2026 - 24/10/2026 (30 días)
+Fecha de cargo bancario: 29.10.2026
+Potencia contratada: 6,900 kW (Importe potencia fija: 33,92 €)
+Energía consumida: 415,27 kWh x 0,101150 €/kWh = 42,01 €
+Desglose tramos horarios: Punta 96,23 kWh | Llano 96,80 kWh | Valle 222,25 kWh
+Servicios adicionales: Tu Asistente 24h: 4,06 €
+Alquiler equipos de medida: 0,75 € | Financiación Bono Social: 0,74 €
+Impuesto sobre electricidad e IVA: 21,85 €
+TOTAL FACTURA: 103,33 €`);
+                      }}
+                      className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-bold transition-all text-left flex items-center gap-1.5"
+                    >
+                      <Zap className="w-3.5 h-3.5" /> Factura Real Repsol (PDF: 0,10115 €/kWh + Asistente 24h)
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRawAiInput(`EMUASA AGUAS DE MURCIA, S.A.
+Factura Nº: 06102026A100849994 | Póliza/Contrato: 6577933
+Periodo facturado: 10/07/2026 - 08/09/2026 (60 días)
+Fecha de cobro: 09.09.2026
+Contador: 15mm (D15TA174976G)
+Consumo bimestral: 17 m³
+Cuota fija de servicio de agua: 13,80 €
+Consumo agua (Tramo 1 y 2): 15,90 €
+Conservación de contador: 0,67 €
+Alcantarillado cuota y consumo: 8,58 €
+Tasa de Basura (Ayuntamiento de Murcia): 28,35 €
+Canon de Saneamiento (ESAMUR Comunidad Autónoma): 11,10 € (Fijo 6,00€ + Variable 5,10€)
+IVA: 4,08 €
+TOTAL FACTURA: 83,57 € (Coste: 1,393 €/día)`);
+                      }}
+                      className="px-3 py-1.5 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 rounded-xl text-xs font-bold transition-all text-left flex items-center gap-1.5"
+                    >
+                      <Droplet className="w-3.5 h-3.5" /> Factura Real EMUASA (PDF: 17 m³ + Basura 28,35€)
+                    </button>
+                  )}
+                </div>
+              </div>
+
               <div>
                 <label className="text-xs text-slate-300 font-bold block mb-1">
                   1. Pegar texto de la factura o desglose OCR:
@@ -3286,9 +4737,332 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    <Sparkles className="w-4 h-4" /> Procesar y Agregar a Gastos
+                    <Sparkles className="w-4 h-4" /> Procesar y Generar Auditoría Inteligente
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 1: ALERTA Y RESULTADO DE AUDITORÍA INTELIGENTE TRAS ESCANEO */}
+      {auditedBillPreview && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-cyan-500/40 rounded-3xl max-w-2xl w-full p-6 lg:p-8 space-y-6 shadow-2xl relative animate-scaleUp max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => setAuditedBillPreview(null)}
+              className="absolute top-5 right-5 p-2 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* Header */}
+            <div className="flex items-center gap-3 border-b border-white/10 pb-4">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-orange-500 flex items-center justify-center shadow-lg text-slate-950">
+                {auditedBillPreview.type === 'ELECTRICITY' ? <Zap className="w-6 h-6" /> : <Droplet className="w-6 h-6" />}
+              </div>
+              <div>
+                <span className="text-[10px] font-mono uppercase tracking-widest text-cyan-400 block font-bold">
+                  Auditoría Energética & Tarifaria Gemini 3.8 Flash
+                </span>
+                <h3 className="text-xl font-black text-white">
+                  Informe de Auditoría: {auditedBillPreview.expense.company}
+                </h3>
+              </div>
+            </div>
+
+            {/* Glowing Alert Banners */}
+            <div className="space-y-3">
+              {auditedBillPreview.type === 'ELECTRICITY' && auditedBillPreview.priceDiffPct !== undefined && (
+                <div>
+                  {auditedBillPreview.priceDiffPct < 0 ? (
+                    <div className="p-4 rounded-2xl bg-emerald-950/80 border border-emerald-500/50 flex items-start gap-3">
+                      <TrendingDown className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+                      <div>
+                        <h4 className="text-sm font-black text-emerald-300">
+                          📉 ¡BAJADA DE PRECIO DETECTADA! (-{Math.abs(auditedBillPreview.priceDiffPct)}%)
+                        </h4>
+                        <p className="text-xs text-slate-200 mt-1">
+                          El precio de la energía ha bajado de{' '}
+                          <span className="font-mono font-bold text-white">{auditedBillPreview.prevUnitPrice?.toFixed(6)} €/kWh</span> a{' '}
+                          <span className="font-mono font-black text-emerald-300">{(auditedBillPreview.expense as ElectricityExpense).unitPrice.toFixed(6)} €/kWh</span>.
+                          Esto supone un ahorro directo en el término de consumo.
+                        </p>
+                      </div>
+                    </div>
+                  ) : auditedBillPreview.priceDiffPct > 0 ? (
+                    <div className="p-4 rounded-2xl bg-red-950/80 border border-red-500/50 flex items-start gap-3">
+                      <TrendingUp className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                      <div>
+                        <h4 className="text-sm font-black text-red-300">
+                          ⚠️ ALERTA DE SUBIDA DE TARIFA (+{auditedBillPreview.priceDiffPct}%)
+                        </h4>
+                        <p className="text-xs text-slate-200 mt-1">
+                          El coste por kWh ha aumentado de{' '}
+                          <span className="font-mono font-bold text-white">{auditedBillPreview.prevUnitPrice?.toFixed(6)} €</span> a{' '}
+                          <span className="font-mono font-black text-red-300">{(auditedBillPreview.expense as ElectricityExpense).unitPrice.toFixed(6)} €</span>.
+                          Comprueba si ha vencido la promoción anual o cambio de condiciones.
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
+              {/* Extra Services Alert (Tu Asistente 24h) */}
+              {auditedBillPreview.extraServiceWarning && (
+                <div className="p-4 rounded-2xl bg-amber-950/80 border border-amber-500/50 flex items-start gap-3">
+                  <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-sm font-black text-amber-300">
+                      🚨 COBRO NO ESENCIAL DETECTADO: {auditedBillPreview.extraServiceWarning}
+                    </h4>
+                    <p className="text-xs text-slate-200 mt-1">
+                      Este servicio corresponde a seguros o asistencias de la comercializadora (Repsol), no a consumo ni a peajes de red. Puedes llamar y solicitar la baja para ahorrar ~48,72 € al año.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Water Municipal Taxes Alert */}
+              {auditedBillPreview.type === 'WATER' && (
+                <div className="p-4 rounded-2xl bg-cyan-950/80 border border-cyan-500/50 flex items-start gap-3">
+                  <Info className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-sm font-black text-cyan-300">
+                      🏛️ DESGLOSE DE TASAS MUNICIPALES (EMUASA)
+                    </h4>
+                    <p className="text-xs text-slate-200 mt-1">
+                      Tasa de Basura del Ayuntamiento de Murcia: <span className="font-mono font-bold text-white">28,35 €</span> (33,9% de la factura) + Canon de Saneamiento Autonómico ESAMUR: <span className="font-mono font-bold text-white">11,10 €</span>. Las tasas públicas representan casi la mitad del recibo.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Bill Summary Card */}
+            <div className="bg-slate-950/90 rounded-2xl p-4 border border-white/10 space-y-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div>
+                  <span className="text-slate-400 text-[10px] uppercase font-bold block">Periodo</span>
+                  <span className="text-white font-mono font-bold">{auditedBillPreview.expense.periodRange || auditedBillPreview.expense.chargeDate}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 text-[10px] uppercase font-bold block">Total Factura</span>
+                  <span className="text-white font-mono font-bold">{(auditedBillPreview.expense.fullInvoiceTotal || auditedBillPreview.expense.totalAmount * 2).toFixed(2)} €</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 text-[10px] uppercase font-bold block">Parte Inquilino</span>
+                  <span className="text-emerald-400 font-mono font-black">{auditedBillPreview.expense.totalAmount.toFixed(2)} €</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 text-[10px] uppercase font-bold block">Consumo Registrado</span>
+                  <span className="text-amber-300 font-mono font-bold">
+                    {auditedBillPreview.type === 'ELECTRICITY' 
+                      ? `${(auditedBillPreview.expense as ElectricityExpense).kwhConsumed} kWh` 
+                      : `${(auditedBillPreview.expense as WaterExpense).m3Consumed} m³`}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
+              <button
+                onClick={() => {
+                  setAuditedBillPreview(null);
+                  setActiveTab('expenses');
+                  setExpensesSubTab(auditedBillPreview.type === 'ELECTRICITY' ? 'audit_elec' : 'audit_water');
+                }}
+                className="w-full sm:w-auto flex-1 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 text-slate-950 font-black text-xs rounded-xl shadow-lg transition-all flex items-center justify-center gap-2"
+              >
+                <Check className="w-4 h-4" /> Aceptar e Incorporar a la Auditoría
+              </button>
+              <button
+                onClick={() => {
+                  addSupplyToCurrentDraft(auditedBillPreview.type, auditedBillPreview.expense.id);
+                  setAuditedBillPreview(null);
+                  setActiveTab('billing');
+                  setBillingSubTab('4.1_builder');
+                }}
+                className="w-full sm:w-auto py-3 px-4 bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 text-white font-black text-xs rounded-xl shadow-lg transition-all flex items-center justify-center gap-2"
+              >
+                <Plus className="w-4 h-4" /> Añadir Directamente a Recibo Borrador
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: INSPECTOR TÉCNICO DE AUDITORÍA DETALLADA */}
+      {viewingAuditExpense && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-white/20 rounded-3xl max-w-2xl w-full p-6 lg:p-8 space-y-6 shadow-2xl relative animate-scaleUp max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => setViewingAuditExpense(null)}
+              className="absolute top-5 right-5 p-2 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* Header */}
+            <div className="flex items-center gap-3 border-b border-white/10 pb-4">
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg font-black text-slate-950 ${
+                viewingAuditExpense.utilityType === 'ELECTRICITY' ? 'bg-amber-400' : 'bg-cyan-400'
+              }`}>
+                {viewingAuditExpense.utilityType === 'ELECTRICITY' ? <Zap className="w-6 h-6" /> : <Droplet className="w-6 h-6" />}
+              </div>
+              <div>
+                <span className="text-[10px] font-mono uppercase tracking-widest text-slate-400 block font-bold">
+                  Dossier Técnico de Factura
+                </span>
+                <h3 className="text-xl font-black text-white">
+                  {viewingAuditExpense.company} • Fact: {viewingAuditExpense.invoiceNumber}
+                </h3>
+              </div>
+            </div>
+
+            {/* Breakdown Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs bg-slate-950/80 p-4 rounded-2xl border border-white/10">
+              <div>
+                <span className="text-slate-400 text-[10px] uppercase font-bold block">Periodo</span>
+                <span className="text-white font-mono font-bold">{viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 text-[10px] uppercase font-bold block">Fecha de Cargo</span>
+                <span className="text-white font-mono">{viewingAuditExpense.chargeDate}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 text-[10px] uppercase font-bold block">Días Facturados</span>
+                <span className="text-white font-mono">{viewingAuditExpense.billingDays || (viewingAuditExpense.utilityType === 'ELECTRICITY' ? 30 : 60)} días</span>
+              </div>
+              <div>
+                <span className="text-slate-400 text-[10px] uppercase font-bold block">Total Factura Completa</span>
+                <span className="text-white font-mono font-bold text-sm">{(viewingAuditExpense.fullInvoiceTotal || viewingAuditExpense.totalAmount * 2).toFixed(2)} €</span>
+              </div>
+              <div>
+                <span className="text-slate-400 text-[10px] uppercase font-bold block">A Cargo Inquilino</span>
+                <span className="text-emerald-400 font-mono font-black text-sm">{viewingAuditExpense.totalAmount.toFixed(2)} €</span>
+              </div>
+              <div>
+                <span className="text-slate-400 text-[10px] uppercase font-bold block">Coste Diario</span>
+                <span className="text-slate-300 font-mono">
+                  {viewingAuditExpense.costPerDay 
+                    ? `${viewingAuditExpense.costPerDay.toFixed(3)} €/día` 
+                    : `${((viewingAuditExpense.fullInvoiceTotal || viewingAuditExpense.totalAmount * 2) / (viewingAuditExpense.billingDays || 30)).toFixed(3)} €/día`}
+                </span>
+              </div>
+            </div>
+
+            {/* Electricity specific breakdown */}
+            {viewingAuditExpense.utilityType === 'ELECTRICITY' && (
+              <div className="space-y-4">
+                <h4 className="text-xs font-black uppercase tracking-wider text-amber-300 flex items-center gap-2">
+                  <Zap className="w-3.5 h-3.5" /> Desglose Energético Repsol
+                </h4>
+                <div className="bg-slate-950/80 p-4 rounded-2xl border border-white/10 space-y-3 text-xs">
+                  <div className="flex justify-between items-center py-1 border-b border-white/5">
+                    <span className="text-slate-300">Precio kWh Contratado:</span>
+                    <span className="font-mono font-black text-amber-300 text-sm">{(viewingAuditExpense as ElectricityExpense).unitPrice.toFixed(6)} €/kWh</span>
+                  </div>
+                  <div className="flex justify-between items-center py-1 border-b border-white/5">
+                    <span className="text-slate-300">Potencia Contratada:</span>
+                    <span className="font-mono text-white">{(viewingAuditExpense as ElectricityExpense).contractedPower || '6,900 kW'}</span>
+                  </div>
+                  <div className="flex justify-between items-center py-1 border-b border-white/5">
+                    <span className="text-slate-300">Término Fijo de Potencia:</span>
+                    <span className="font-mono text-white">{((viewingAuditExpense as ElectricityExpense).fixedTermCost || 33.92).toFixed(2)} €</span>
+                  </div>
+                  <div className="flex justify-between items-center py-1 border-b border-white/5">
+                    <span className="text-slate-300">Consumo Total:</span>
+                    <span className="font-mono text-white">{(viewingAuditExpense as ElectricityExpense).kwhConsumed} kWh</span>
+                  </div>
+                  {(viewingAuditExpense as ElectricityExpense).hourlyTiers && (
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-slate-300">Tramos Punta / Llano / Valle:</span>
+                      <span className="font-mono text-purple-300">
+                        {(viewingAuditExpense as ElectricityExpense).hourlyTiers?.puntaKwh || 0}P / {(viewingAuditExpense as ElectricityExpense).hourlyTiers?.llanoKwh || 0}Ll / {(viewingAuditExpense as ElectricityExpense).hourlyTiers?.valleKwh || 0}V
+                      </span>
+                    </div>
+                  )}
+                  {(viewingAuditExpense as ElectricityExpense).extraServicesCost ? (
+                    <div className="flex justify-between items-center py-1 bg-amber-950/40 p-2 rounded-xl border border-amber-500/30">
+                      <span className="text-amber-300 font-bold flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5" /> {(viewingAuditExpense as ElectricityExpense).extraServicesName || 'Tu Asistente 24h'}
+                      </span>
+                      <span className="font-mono font-black text-amber-300">
+                        {((viewingAuditExpense as ElectricityExpense).extraServicesCost || 0).toFixed(2)} €
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            )}
+
+            {/* Water specific breakdown */}
+            {viewingAuditExpense.utilityType === 'WATER' && (
+              <div className="space-y-4">
+                <h4 className="text-xs font-black uppercase tracking-wider text-cyan-300 flex items-center gap-2">
+                  <Droplet className="w-3.5 h-3.5" /> Desglose Tarifario y Municipal EMUASA
+                </h4>
+                <div className="bg-slate-950/80 p-4 rounded-2xl border border-white/10 space-y-2 text-xs">
+                  <div className="flex justify-between items-center py-1 border-b border-white/5">
+                    <span className="text-slate-300">Cuota Servicio Abastecimiento:</span>
+                    <span className="font-mono text-white">{((viewingAuditExpense as WaterExpense).breakdown?.waterService || 13.80).toFixed(2)} €</span>
+                  </div>
+                  <div className="flex justify-between items-center py-1 border-b border-white/5">
+                    <span className="text-slate-300">Consumo Variable de Agua:</span>
+                    <span className="font-mono text-white">{((viewingAuditExpense as WaterExpense).breakdown?.waterConsumption || 15.90).toFixed(2)} €</span>
+                  </div>
+                  <div className="flex justify-between items-center py-1 border-b border-white/5 bg-amber-950/40 p-2 rounded-xl border border-amber-500/30">
+                    <span className="text-amber-300 font-bold">Tasa de Basuras (Ayuntamiento de Murcia):</span>
+                    <span className="font-mono font-black text-amber-300">{((viewingAuditExpense as WaterExpense).breakdown?.wasteCollection || 28.35).toFixed(2)} €</span>
+                  </div>
+                  <div className="flex justify-between items-center py-1 border-b border-white/5">
+                    <span className="text-slate-300">Canon de Saneamiento (ESAMUR):</span>
+                    <span className="font-mono text-white">{((viewingAuditExpense as WaterExpense).breakdown?.sanitationCanon || 11.10).toFixed(2)} €</span>
+                  </div>
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-slate-300">Alcantarillado & Contador:</span>
+                    <span className="font-mono text-white">
+                      {(((viewingAuditExpense as WaterExpense).breakdown?.sewerage || 8.58) + ((viewingAuditExpense as WaterExpense).breakdown?.meterConservation || 0.67)).toFixed(2)} €
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* WhatsApp explanation copy */}
+            <div className="bg-slate-950 p-4 rounded-2xl border border-white/10 space-y-2">
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
+                Texto Explicativo para Inquilino (WhatsApp):
+              </span>
+              <p className="text-xs text-slate-300 font-mono bg-slate-900 p-3 rounded-xl border border-white/5">
+                {viewingAuditExpense.utilityType === 'ELECTRICITY'
+                  ? `Factura de luz ${viewingAuditExpense.company} del periodo ${viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}: Consumo de ${(viewingAuditExpense as ElectricityExpense).kwhConsumed} kWh a ${(viewingAuditExpense as ElectricityExpense).unitPrice.toFixed(5)} €/kWh. Total factura: ${(viewingAuditExpense.fullInvoiceTotal || viewingAuditExpense.totalAmount * 2).toFixed(2)} €. Cuota inquilino (${supplyRules.electricity}%): ${viewingAuditExpense.totalAmount.toFixed(2)} €.`
+                  : `Factura de agua ${viewingAuditExpense.company} del periodo ${viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}: Consumo ${(viewingAuditExpense as WaterExpense).m3Consumed} m³ más tasas municipales de basura (${((viewingAuditExpense as WaterExpense).breakdown?.wasteCollection || 28.35).toFixed(2)}€) y canon de saneamiento (${((viewingAuditExpense as WaterExpense).breakdown?.sanitationCanon || 11.10).toFixed(2)}€). Total factura: ${(viewingAuditExpense.fullInvoiceTotal || viewingAuditExpense.totalAmount * 2).toFixed(2)} €. Cuota inquilino (${supplyRules.water}%): ${viewingAuditExpense.totalAmount.toFixed(2)} €.`}
+              </p>
+              <button
+                onClick={() => {
+                  const text = viewingAuditExpense.utilityType === 'ELECTRICITY'
+                    ? `Factura de luz ${viewingAuditExpense.company} del periodo ${viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}: Consumo de ${(viewingAuditExpense as ElectricityExpense).kwhConsumed} kWh a ${(viewingAuditExpense as ElectricityExpense).unitPrice.toFixed(5)} €/kWh. Total factura: ${(viewingAuditExpense.fullInvoiceTotal || viewingAuditExpense.totalAmount * 2).toFixed(2)} €. Cuota inquilino (${supplyRules.electricity}%): ${viewingAuditExpense.totalAmount.toFixed(2)} €.`
+                    : `Factura de agua ${viewingAuditExpense.company} del periodo ${viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}: Consumo ${(viewingAuditExpense as WaterExpense).m3Consumed} m³ más tasas municipales de basura (${((viewingAuditExpense as WaterExpense).breakdown?.wasteCollection || 28.35).toFixed(2)}€) y canon de saneamiento (${((viewingAuditExpense as WaterExpense).breakdown?.sanitationCanon || 11.10).toFixed(2)}€). Total factura: ${(viewingAuditExpense.fullInvoiceTotal || viewingAuditExpense.totalAmount * 2).toFixed(2)} €. Cuota inquilino (${supplyRules.water}%): ${viewingAuditExpense.totalAmount.toFixed(2)} €.`;
+                  copyToClipboard(text);
+                }}
+                className="w-full py-2 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-2"
+              >
+                <Copy className="w-3.5 h-3.5" /> Copiar Explicación para WhatsApp
+              </button>
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => setViewingAuditExpense(null)}
+                className="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl transition-colors"
+              >
+                Cerrar Dossier
               </button>
             </div>
           </div>
