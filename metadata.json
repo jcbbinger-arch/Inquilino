@@ -1,0 +1,6 @@
+{
+  "name": "InquilinoPro - Gestión de Alquileres y Gastos",
+  "description": "Sistema integral de gestión de inquilinos, control de alquiler, facturas de agua y luz con IA, y facturación mensual",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
