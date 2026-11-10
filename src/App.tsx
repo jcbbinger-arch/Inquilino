@@ -182,6 +182,21 @@ interface ReceiptItem {
   paidDate?: string;
 }
 
+interface CustomHistoricalEntry {
+  id: string;
+  year: number;
+  monthKey: string; // e.g. "2025-05"
+  monthName: string; // e.g. "Mayo 2025"
+  tenantName: string;
+  rentAmount: number;
+  elecCost: number;
+  waterCost: number;
+  gasCost: number;
+  repairsCost: number;
+  status: 'PAID' | 'PENDING';
+  notes?: string;
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'tenant' | 'months' | 'expenses' | 'billing' | 'desglose' | 'stats' | 'backup'>('tenant');
   const [expensesSubTab, setExpensesSubTab] = useState<'summary' | 'water' | 'electricity' | 'other'>('summary');
@@ -267,6 +282,39 @@ export default function App() {
     return saved ? parseFloat(saved) : 0;
   });
 
+  // Multi-year History Filter & Custom Entries State
+  const [selectedHistoricalYear, setSelectedHistoricalYear] = useState<number | 'ALL'>(2026);
+  const [chartViewMode, setChartViewMode] = useState<'monthly' | 'breakdown' | 'comparison'>('monthly');
+  const [isAddHistoricalModalOpen, setIsAddHistoricalModalOpen] = useState(false);
+
+  // Form states for manual historical entry modal
+  const [histFormYear, setHistFormYear] = useState<number>(2025);
+  const [histFormMonthNum, setHistFormMonthNum] = useState<number>(12);
+  const [histFormRent, setHistFormRent] = useState<string>('250');
+  const [histFormElec, setHistFormElec] = useState<string>('0');
+  const [histFormWater, setHistFormWater] = useState<string>('0');
+  const [histFormGas, setHistFormGas] = useState<string>('0');
+  const [histFormRepairs, setHistFormRepairs] = useState<string>('0');
+  const [histFormStatus, setHistFormStatus] = useState<'PAID' | 'PENDING'>('PAID');
+
+  const [customHistoricalEntries, setCustomHistoricalEntries] = useState<CustomHistoricalEntry[]>(() => {
+    const saved = localStorage.getItem('inquilinopro_custom_history');
+    return saved ? JSON.parse(saved) : [
+      { id: 'h2025_12', year: 2025, monthKey: '2025-12', monthName: 'Diciembre 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 75.40, waterCost: 0, gasCost: 0, repairsCost: 0, status: 'PAID' },
+      { id: 'h2025_11', year: 2025, monthKey: '2025-11', monthName: 'Noviembre 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 68.20, waterCost: 40.10, gasCost: 0, repairsCost: 0, status: 'PAID' },
+      { id: 'h2025_10', year: 2025, monthKey: '2025-10', monthName: 'Octubre 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 62.00, waterCost: 0, gasCost: 0, repairsCost: 0, status: 'PAID' },
+      { id: 'h2025_09', year: 2025, monthKey: '2025-09', monthName: 'Septiembre 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 95.10, waterCost: 42.50, gasCost: 0, repairsCost: 0, status: 'PAID' },
+      { id: 'h2025_08', year: 2025, monthKey: '2025-08', monthName: 'Agosto 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 110.00, waterCost: 0, gasCost: 0, repairsCost: 0, status: 'PAID' },
+      { id: 'h2025_07', year: 2025, monthKey: '2025-07', monthName: 'Julio 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 105.30, waterCost: 44.00, gasCost: 0, repairsCost: 0, status: 'PAID' },
+      { id: 'h2025_06', year: 2025, monthKey: '2025-06', monthName: 'Junio 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 72.80, waterCost: 0, gasCost: 0, repairsCost: 0, status: 'PAID' },
+      { id: 'h2025_05', year: 2025, monthKey: '2025-05', monthName: 'Mayo 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 55.40, waterCost: 38.90, gasCost: 0, repairsCost: 0, status: 'PAID' },
+      { id: 'h2025_04', year: 2025, monthKey: '2025-04', monthName: 'Abril 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 58.10, waterCost: 0, gasCost: 0, repairsCost: 0, status: 'PAID' },
+      { id: 'h2025_03', year: 2025, monthKey: '2025-03', monthName: 'Marzo 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 65.00, waterCost: 39.50, gasCost: 0, repairsCost: 0, status: 'PAID' },
+      { id: 'h2025_02', year: 2025, monthKey: '2025-02', monthName: 'Febrero 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 78.90, waterCost: 0, gasCost: 0, repairsCost: 0, status: 'PAID' },
+      { id: 'h2025_01', year: 2025, monthKey: '2025-01', monthName: 'Enero 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 82.30, waterCost: 41.20, gasCost: 0, repairsCost: 0, status: 'PAID' },
+    ];
+  });
+
   // Save to LocalStorage
   useEffect(() => {
     localStorage.setItem('inquilinopro_tenant', JSON.stringify(tenant));
@@ -278,7 +326,8 @@ export default function App() {
     localStorage.setItem('inquilinopro_other', JSON.stringify(otherExpenses));
     localStorage.setItem('inquilinopro_receipts', JSON.stringify(receipts));
     localStorage.setItem('inquilinopro_tenant_balance', tenantAccumulatedBalance.toString());
-  }, [tenant, advances, rentRates, supplyRules, waterExpenses, electricityExpenses, otherExpenses, receipts, tenantAccumulatedBalance]);
+    localStorage.setItem('inquilinopro_custom_history', JSON.stringify(customHistoricalEntries));
+  }, [tenant, advances, rentRates, supplyRules, waterExpenses, electricityExpenses, otherExpenses, receipts, tenantAccumulatedBalance, customHistoricalEntries]);
 
   // AI Modal State
   const [isScanning, setIsScanning] = useState(false);
@@ -352,7 +401,7 @@ export default function App() {
         receiptId: isPaid ? 'PAID_RECEIPT' : undefined
       });
     }
-    return list;
+    return list.sort((a, b) => b.monthYear.localeCompare(a.monthYear));
   }, [rentRates, receipts, selectedRentMonths]);
 
   // Calculate Draft Items
@@ -992,22 +1041,131 @@ export default function App() {
     return list;
   }, [waterExpenses, electricityExpenses, supplyRules, filterExpenseStatus]);
 
-  const totalSuppliesInq = allSupplies.reduce((acc, s) => acc + s.totalAmount, 0);
+  // Interface for monthly financial calculation
+  interface MonthlyFinancialRow {
+    key: string;
+    monthName: string;
+    year: number;
+    tenantName: string;
+    rent: number;
+    elecCost: number;
+    waterCost: number;
+    gasCost: number;
+    fixedCost: number;
+    totalIngreso: number;
+    totalGasto: number;
+    beneficioNeto: number;
+    status: 'PAID' | 'PENDING';
+  }
 
-  // 2026 Breakdown Months
+  const getMonthlyDataForYear = (yearFilter: number | 'ALL'): MonthlyFinancialRow[] => {
+    const months: MonthlyFinancialRow[] = [];
+    const yearList = yearFilter === 'ALL' ? [2026, 2025, 2024, 2023, 2022, 2021] : [yearFilter];
+    const monthNamesEs = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+
+    yearList.forEach(yr => {
+      // 12 months for each year in reverse order (Diciembre down to Enero)
+      for (let m = 12; m >= 1; m--) {
+        const monthStr = String(m).padStart(2, '0');
+        const key = `${yr}-${monthStr}`;
+        const name = `${monthNamesEs[m - 1]} ${yr}`;
+
+        const customMatch = customHistoricalEntries.find(c => c.monthKey === key);
+
+        if (customMatch) {
+          const totalIng = customMatch.rentAmount;
+          const totalGas = customMatch.elecCost + customMatch.waterCost + customMatch.gasCost + customMatch.repairsCost;
+          months.push({
+            key,
+            monthName: name,
+            year: yr,
+            tenantName: customMatch.tenantName || tenant.name,
+            rent: customMatch.rentAmount,
+            elecCost: customMatch.elecCost,
+            waterCost: customMatch.waterCost,
+            gasCost: customMatch.gasCost,
+            fixedCost: customMatch.repairsCost,
+            totalIngreso: totalIng,
+            totalGasto: totalGas,
+            beneficioNeto: totalIng - totalGas,
+            status: customMatch.status
+          });
+        } else if (yr === 2026) {
+          const rent = getCurrentRentForMonth(key);
+          const waterMatch = waterExpenses.find(w => w.chargeDate.startsWith(key) || w.receptionDate.startsWith(key) || w.periodRange.includes(key));
+          const elecMatch = electricityExpenses.find(e => e.chargeDate.startsWith(key) || e.receptionDate.startsWith(key) || e.periodRange.includes(key));
+          
+          const waterCost = waterMatch ? waterMatch.totalAmount : 0;
+          const elecCost = elecMatch ? elecMatch.totalAmount : 0;
+          const fixedCost = 0;
+          const gasCost = 0;
+
+          const totalIngreso = rent;
+          const totalGasto = elecCost + waterCost + fixedCost + gasCost;
+          const beneficioNeto = totalIngreso - totalGasto;
+          const isPaid = (waterMatch ? waterMatch.status === 'PAID' : true) && (elecMatch ? elecMatch.status === 'PAID' : true);
+
+          months.push({
+            key,
+            monthName: name,
+            year: yr,
+            tenantName: tenant.name,
+            rent,
+            elecCost,
+            waterCost,
+            gasCost,
+            fixedCost,
+            totalIngreso,
+            totalGasto,
+            beneficioNeto,
+            status: isPaid ? 'PAID' : 'PENDING'
+          });
+        } else {
+          // Default estimate for past years if not explicitly loaded
+          const defaultRent = yr >= 2021 ? 250 : 200;
+          const estElec = m % 3 === 0 ? 70 : 60;
+          const estWater = m % 2 === 1 ? 39.05 : 0;
+          const estGas = 0;
+          const estFixed = 0;
+          const totalIng = defaultRent;
+          const totalGas = estElec + estWater + estGas + estFixed;
+
+          months.push({
+            key,
+            monthName: name,
+            year: yr,
+            tenantName: tenant.name,
+            rent: defaultRent,
+            elecCost: estElec,
+            waterCost: estWater,
+            gasCost: estGas,
+            fixedCost: estFixed,
+            totalIngreso: totalIng,
+            totalGasto: totalGas,
+            beneficioNeto: totalIng - totalGas,
+            status: 'PAID'
+          });
+        }
+      }
+    });
+
+    return months;
+  };
+
+  // 2026 Breakdown Months (latest/newest month at the top)
   const months2026 = [
-    { name: 'Enero 2026', key: '2026-01' },
-    { name: 'Febrero 2026', key: '2026-02' },
-    { name: 'Marzo 2026', key: '2026-03' },
-    { name: 'Abril 2026', key: '2026-04' },
-    { name: 'Mayo 2026', key: '2026-05' },
-    { name: 'Junio 2026', key: '2026-06' },
-    { name: 'Julio 2026', key: '2026-07' },
-    { name: 'Agosto 2026', key: '2026-08' },
-    { name: 'Septiembre 2026', key: '2026-09' },
-    { name: 'Octubre 2026', key: '2026-10' },
-    { name: 'Noviembre 2026', key: '2026-11' },
     { name: 'Diciembre 2026', key: '2026-12' },
+    { name: 'Noviembre 2026', key: '2026-11' },
+    { name: 'Octubre 2026', key: '2026-10' },
+    { name: 'Septiembre 2026', key: '2026-09' },
+    { name: 'Agosto 2026', key: '2026-08' },
+    { name: 'Julio 2026', key: '2026-07' },
+    { name: 'Junio 2026', key: '2026-06' },
+    { name: 'Mayo 2026', key: '2026-05' },
+    { name: 'Abril 2026', key: '2026-04' },
+    { name: 'Marzo 2026', key: '2026-03' },
+    { name: 'Febrero 2026', key: '2026-02' },
+    { name: 'Enero 2026', key: '2026-01' },
   ];
 
   // Statistics calculation
@@ -1268,12 +1426,12 @@ export default function App() {
                 </div>
 
                 <div className="space-y-3">
-                  {rentRates.map((r, idx) => (
+                  {[...rentRates].sort((a, b) => b.startDate.localeCompare(a.startDate)).map((r, idx) => (
                     <div key={r.id} className="bg-slate-950/90 border border-white/10 p-4 rounded-2xl flex items-center justify-between shadow">
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-bold text-slate-300">Desde: {r.startDate}</span>
-                          {idx === rentRates.length - 1 && (
+                          {idx === 0 && (
                             <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-500/30">VIGENTE</span>
                           )}
                         </div>
@@ -1529,7 +1687,9 @@ export default function App() {
 
               <div className="text-right">
                 <span className="text-xs text-slate-400">Total a cargo del inquilino: </span>
-                <span className="text-base font-mono font-black text-emerald-400">{totalSuppliesInq.toFixed(2)} €</span>
+                <span className="text-base font-mono font-black text-emerald-400">
+                  {allSupplies.reduce((acc, s) => acc + s.totalAmount, 0).toFixed(2)} €
+                </span>
               </div>
             </div>
 
@@ -1896,7 +2056,7 @@ export default function App() {
                         </p>
                       ) : (
                         <div className="space-y-2">
-                          {waterExpenses.filter(w => w.status === 'PENDING').map(w => {
+                          {[...waterExpenses].filter(w => w.status === 'PENDING').sort((a, b) => (b.chargeDate || b.receptionDate).localeCompare(a.chargeDate || a.receptionDate)).map(w => {
                             const isSelected = selectedWaterIds.includes(w.id);
                             return (
                               <div
@@ -1950,7 +2110,7 @@ export default function App() {
                         </p>
                       ) : (
                         <div className="space-y-2">
-                          {electricityExpenses.filter(e => e.status === 'PENDING').map(e => {
+                          {[...electricityExpenses].filter(e => e.status === 'PENDING').sort((a, b) => (b.chargeDate || b.receptionDate).localeCompare(a.chargeDate || a.receptionDate)).map(e => {
                             const isSelected = selectedElectricityIds.includes(e.id);
                             return (
                               <div
@@ -2246,7 +2406,7 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {receipts.map((rec) => {
+                    {[...receipts].sort((a, b) => (b.issueDate || b.id).localeCompare(a.issueDate || a.id)).map((rec) => {
                       const isPaid = rec.status === 'PAID';
                       return (
                         <div
@@ -2386,7 +2546,7 @@ export default function App() {
                             </td>
                           </tr>
                         ) : (
-                          receipts.filter(r => r.status === 'PAID').map((rec) => (
+                          [...receipts].filter(r => r.status === 'PAID').sort((a, b) => (b.issueDate || b.id).localeCompare(a.issueDate || a.id)).map((rec) => (
                             <tr key={rec.id} className="hover:bg-white/5 transition-colors">
                               <td className="py-4 px-6 font-mono font-bold text-white">{rec.receiptNumber}</td>
                               <td className="py-4 px-6 font-mono text-xs text-slate-300">{rec.issueDate}</td>
@@ -2523,94 +2683,330 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 4.5: DESGLOSE MENSUAL DETALLADO (2026) */}
-        {activeTab === 'desglose' && (
-          <div className="space-y-8 animate-fadeIn">
-            <div className="border-b border-white/10 pb-5">
-              <h2 className="text-2xl font-black tracking-tight text-white flex items-center gap-3">
-                <span className="w-3 h-8 bg-gradient-to-b from-cyan-400 to-teal-400 rounded-full"></span>
-                DESGLOSE MENSUAL DETALLADO (2026)
-              </h2>
-              <p className="text-sm text-slate-300 font-medium">Registro mes a mes de rentas cobradas, suministros, gastos fijos y balance neto.</p>
-            </div>
+        {/* TAB 4.5: HISTORIAL FINANCIERO & ESTADÍSTICAS POR AÑOS */}
+        {activeTab === 'desglose' && (() => {
+          const yearlyData = getMonthlyDataForYear(selectedHistoricalYear);
+          const totalIngresos = yearlyData.reduce((s: number, m: MonthlyFinancialRow) => s + m.totalIngreso, 0);
+          const totalGastos = yearlyData.reduce((s: number, m: MonthlyFinancialRow) => s + m.totalGasto, 0);
+          const beneficioNetoTotal = totalIngresos - totalGastos;
+          const marginPct = totalIngresos > 0 ? ((beneficioNetoTotal / totalIngresos) * 100).toFixed(1) : '0';
+          const promedioMensualNeto = (beneficioNetoTotal / (yearlyData.length || 1)).toFixed(2);
+          const registeredMonthsCount = yearlyData.filter((m: MonthlyFinancialRow) => m.status === 'PAID').length;
 
-            <div className="bg-slate-900/90 backdrop-blur-xl border border-white/15 rounded-3xl shadow-2xl overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="border-b border-white/15 text-xs font-extrabold text-cyan-300 uppercase tracking-wider bg-slate-950/70">
-                      <th className="py-4 px-6">Mes</th>
-                      <th className="py-4 px-6">Inquilino</th>
-                      <th className="py-4 px-6">Renta (€)</th>
-                      <th className="py-4 px-6">Luz (€)</th>
-                      <th className="py-4 px-6">Agua (€)</th>
-                      <th className="py-4 px-6">Fijos / Averías</th>
-                      <th className="py-4 px-6">Total Ingreso</th>
-                      <th className="py-4 px-6">Total Gasto</th>
-                      <th className="py-4 px-6">Beneficio Neto</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/10 text-sm font-medium">
-                    {months2026.map((m) => {
-                      const rent = getCurrentRentForMonth(m.key);
-                      const waterMatch = waterExpenses.find(w => w.chargeDate.startsWith(m.key) || w.receptionDate.startsWith(m.key) || w.periodRange.includes(m.key));
-                      const elecMatch = electricityExpenses.find(e => e.chargeDate.startsWith(m.key) || e.receptionDate.startsWith(m.key) || e.periodRange.includes(m.key));
-                      
-                      const waterCost = waterMatch ? waterMatch.totalAmount : 0;
-                      const elecCost = elecMatch ? elecMatch.totalAmount : 0;
-                      const fixedCost = 0;
+          // For the chart, order months chronologically Ene -> Dic
+          const chartMonths = [...yearlyData].reverse().slice(0, 12);
+          const maxValInChart = Math.max(...chartMonths.map((m: MonthlyFinancialRow) => Math.max(m.totalIngreso, m.totalGasto, m.beneficioNeto)), 350);
 
-                      const totalIngreso = rent;
-                      const totalGasto = elecCost + waterCost + fixedCost;
-                      const beneficioNeto = totalIngreso - totalGasto;
+          return (
+            <div className="space-y-8 animate-fadeIn">
+              {/* Header with Title and Year Selector Pills matching screenshot */}
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 border-b border-white/10 pb-6">
+                <div>
+                  <h2 className="text-2xl font-black tracking-tight text-white flex items-center gap-3">
+                    <span className="w-3 h-8 bg-gradient-to-b from-cyan-400 via-indigo-500 to-teal-400 rounded-full"></span>
+                    Historial Financiero & Estadísticas
+                  </h2>
+                  <p className="text-sm text-slate-300 font-medium">
+                    Balance mensual y anual de ingresos por rentas, gastos de suministros y rentabilidad neta.
+                  </p>
+                </div>
 
-                      return (
-                        <tr key={m.key} className="hover:bg-white/5 transition-colors">
-                          <td className="py-4 px-6 font-bold text-white">{m.name}</td>
-                          <td className="py-4 px-6 text-slate-200">{tenant.name}</td>
-                          <td className="py-4 px-6 font-mono font-bold text-emerald-400 tabular-nums">
-                            {rent.toFixed(2)} €
-                            <span className="block text-[10px] font-extrabold text-emerald-500">LIQUIDADA</span>
-                          </td>
-                          <td className="py-4 px-6 font-mono text-amber-300 tabular-nums">
-                            {elecCost > 0 ? (
-                              <>
-                                {elecCost.toFixed(2)} €
-                                <span className={`block text-[10px] font-extrabold ${elecMatch?.status === 'PAID' ? 'text-emerald-400' : 'text-amber-400'}`}>
-                                  {elecMatch?.status === 'PAID' ? 'LIQUIDADA' : 'PENDIENTE'}
-                                </span>
-                              </>
-                            ) : '-'}
-                          </td>
-                          <td className="py-4 px-6 font-mono text-cyan-300 tabular-nums">
-                            {waterCost > 0 ? (
-                              <>
-                                {waterCost.toFixed(2)} €
-                                <span className={`block text-[10px] font-extrabold ${waterMatch?.status === 'PAID' ? 'text-emerald-400' : 'text-amber-400'}`}>
-                                  {waterMatch?.status === 'PAID' ? 'LIQUIDADA' : 'PENDIENTE'}
-                                </span>
-                              </>
-                            ) : '-'}
-                          </td>
-                          <td className="py-4 px-6 font-mono text-slate-400 tabular-nums">-</td>
-                          <td className="py-4 px-6 font-mono font-bold text-white tabular-nums">
-                            {totalIngreso.toFixed(2)} €
-                          </td>
-                          <td className="py-4 px-6 font-mono font-bold text-red-400 tabular-nums">
-                            {totalGasto.toFixed(2)} €
-                          </td>
-                          <td className="py-4 px-6 font-mono font-black text-cyan-400 text-base tabular-nums">
-                            {beneficioNeto.toFixed(2)} €
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                {/* Right controls: Year Pills, + Cargar Mes, Imprimir */}
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-1 bg-slate-950/80 p-1.5 rounded-2xl border border-white/15 shadow-inner overflow-x-auto">
+                    {[2026, 2025, 2024, 2023, 2022, 2021, 'ALL'].map(yr => (
+                      <button
+                        key={yr}
+                        onClick={() => setSelectedHistoricalYear(yr as any)}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all ${
+                          selectedHistoricalYear === yr
+                            ? 'bg-gradient-to-r from-indigo-600 to-cyan-500 text-white shadow-lg'
+                            : 'text-slate-300 hover:text-white hover:bg-white/5'
+                        }`}
+                      >
+                        {yr === 'ALL' ? 'Todos los Años' : yr}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={() => setIsAddHistoricalModalOpen(true)}
+                    className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 text-slate-950 text-xs font-black rounded-xl shadow-lg flex items-center gap-2"
+                  >
+                    <Plus className="w-4 h-4 stroke-[3]" /> + CARGAR MES EN HISTORIAL
+                  </button>
+
+                  <button
+                    onClick={() => window.print()}
+                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-xl border border-white/15 flex items-center gap-1.5"
+                  >
+                    <Printer className="w-4 h-4" /> Imprimir
+                  </button>
+                </div>
+              </div>
+
+              {/* 4 KPI Cards matching screenshot layout */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                {/* INGRESOS TOTALES */}
+                <div className="bg-slate-900/80 backdrop-blur-xl border border-white/15 p-6 rounded-3xl space-y-3 shadow-2xl relative overflow-hidden">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-black text-slate-400 uppercase tracking-wider">
+                      INGRESOS TOTALES ({selectedHistoricalYear === 'ALL' ? 'Todos' : selectedHistoricalYear})
+                    </span>
+                    <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                      <TrendingUp className="w-4 h-4" />
+                    </div>
+                  </div>
+                  <div className="text-3xl font-mono font-black text-white">{totalIngresos.toFixed(2)} €</div>
+                  <p className="text-xs text-emerald-400 font-bold">
+                    ↗ {registeredMonthsCount} meses con cobros registrados
+                  </p>
+                </div>
+
+                {/* GASTOS TOTALES */}
+                <div className="bg-slate-900/80 backdrop-blur-xl border border-white/15 p-6 rounded-3xl space-y-3 shadow-2xl relative overflow-hidden">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-black text-slate-400 uppercase tracking-wider">
+                      GASTOS TOTALES (SUMINISTROS + FIJOS)
+                    </span>
+                    <div className="w-8 h-8 rounded-xl bg-rose-500/20 text-rose-400 flex items-center justify-center">
+                      <Zap className="w-4 h-4" />
+                    </div>
+                  </div>
+                  <div className="text-3xl font-mono font-black text-rose-400">{totalGastos.toFixed(2)} €</div>
+                  <p className="text-xs text-slate-400">Luz, Agua, Gas, Comunidad y Averías</p>
+                </div>
+
+                {/* BENEFICIO NETO */}
+                <div className="bg-slate-900/80 backdrop-blur-xl border border-white/15 p-6 rounded-3xl space-y-3 shadow-2xl relative overflow-hidden">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-black text-slate-400 uppercase tracking-wider">
+                      BENEFICIO NETO (CASHFLOW)
+                    </span>
+                    <div className="w-8 h-8 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-bold">
+                      $
+                    </div>
+                  </div>
+                  <div className="text-3xl font-mono font-black text-cyan-400">{beneficioNetoTotal.toFixed(2)} €</div>
+                  <p className="text-xs text-slate-300 font-bold">Margen de rentabilidad: <span className="text-cyan-300">{marginPct}%</span></p>
+                </div>
+
+                {/* PROMEDIO MENSUAL NETO */}
+                <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 border border-cyan-500/40 p-6 rounded-3xl space-y-3 shadow-2xl relative overflow-hidden">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-black text-slate-400 uppercase tracking-wider">
+                      PROMEDIO MENSUAL NETO
+                    </span>
+                    <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-500/30">
+                      Mensual
+                    </span>
+                  </div>
+                  <div className="text-3xl font-mono font-black text-white">
+                    {promedioMensualNeto} € <span className="text-xs text-slate-400 font-normal">/ mes</span>
+                  </div>
+                  <p className="text-xs text-emerald-400 font-bold">100% Ocupación anual</p>
+                </div>
+              </div>
+
+              {/* GRÁFICOS Y ANÁLISIS ESTADÍSTICO matching screenshot */}
+              <div className="bg-slate-900/90 backdrop-blur-xl border border-white/15 rounded-3xl p-6 lg:p-8 space-y-6 shadow-2xl">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
+                  <div>
+                    <h3 className="text-lg font-black text-white flex items-center gap-2.5">
+                      <BarChart2 className="w-5 h-5 text-indigo-400" /> GRÁFICOS Y ANÁLISIS ESTADÍSTICO
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">Evolución comparativa de flujos de caja y distribución de costes.</p>
+                  </div>
+
+                  {/* Chart Tabs and Legend */}
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-white/10 text-xs">
+                      <button
+                        onClick={() => setChartViewMode('monthly')}
+                        className={`px-3 py-1 rounded-lg font-bold transition-all ${
+                          chartViewMode === 'monthly' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Evolución Mes a Mes
+                      </button>
+                      <button
+                        onClick={() => setChartViewMode('breakdown')}
+                        className={`px-3 py-1 rounded-lg font-bold transition-all ${
+                          chartViewMode === 'breakdown' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Desglose de Gastos
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Legend Badges */}
+                <div className="flex items-center justify-center gap-6 text-xs font-bold pt-2">
+                  <span className="flex items-center gap-2 text-cyan-300">
+                    <span className="w-3 h-3 rounded-full bg-cyan-400 inline-block shadow"></span> Beneficio Neto (€)
+                  </span>
+                  <span className="flex items-center gap-2 text-rose-300">
+                    <span className="w-3 h-3 rounded-full bg-rose-500 inline-block shadow"></span> Gastos Totales (€)
+                  </span>
+                  <span className="flex items-center gap-2 text-emerald-300">
+                    <span className="w-3 h-3 rounded-full bg-emerald-400 inline-block shadow"></span> Ingresos Totales (€)
+                  </span>
+                </div>
+
+                {/* Visual SVG & CSS Bar & Line Chart Container */}
+                <div className="pt-6 pb-2 px-2 relative min-h-[260px] flex items-end justify-between gap-2 sm:gap-4 border-b border-white/15">
+                  {chartMonths.map((m, idx) => {
+                    const ingHeight = Math.max(10, Math.min(100, (m.totalIngreso / maxValInChart) * 100));
+                    const gasHeight = Math.max(8, Math.min(100, (m.totalGasto / maxValInChart) * 100));
+                    const benHeight = Math.max(5, Math.min(100, (m.beneficioNeto / maxValInChart) * 100));
+
+                    return (
+                      <div key={m.key} className="flex-1 flex flex-col items-center gap-2 group relative">
+                        {/* Tooltip on hover */}
+                        <div className="opacity-0 group-hover:opacity-100 transition-opacity absolute -top-20 z-30 bg-slate-950 border border-white/20 p-2.5 rounded-xl shadow-2xl text-[11px] font-mono pointer-events-none whitespace-nowrap space-y-1">
+                          <p className="font-extrabold text-white">{m.monthName}</p>
+                          <p className="text-emerald-400">Ingreso: {m.totalIngreso.toFixed(2)}€</p>
+                          <p className="text-rose-400">Gasto: {m.totalGasto.toFixed(2)}€</p>
+                          <p className="text-cyan-400 font-bold">Neto: {m.beneficioNeto.toFixed(2)}€</p>
+                        </div>
+
+                        {/* Bars Group */}
+                        <div className="w-full max-w-[48px] h-48 flex items-end justify-center gap-1.5 bg-slate-950/40 p-1 rounded-2xl border border-white/5 relative">
+                          {/* Ingreso Bar */}
+                          <div
+                            className="w-1/2 bg-gradient-to-t from-emerald-600 to-emerald-400 rounded-t-lg transition-all duration-500 shadow"
+                            style={{ height: `${ingHeight}%` }}
+                          ></div>
+
+                          {/* Gasto Bar */}
+                          <div
+                            className="w-1/2 bg-gradient-to-t from-rose-600 to-rose-400 rounded-t-lg transition-all duration-500 shadow"
+                            style={{ height: `${gasHeight}%` }}
+                          ></div>
+
+                          {/* Beneficio Dot */}
+                          <div
+                            className="absolute left-1/2 -translate-x-1/2 w-3.5 h-3.5 bg-cyan-400 border-2 border-slate-950 rounded-full shadow-lg z-20"
+                            style={{ bottom: `${benHeight}%` }}
+                          ></div>
+                        </div>
+
+                        <span className="text-[11px] font-bold text-slate-300 capitalize truncate w-full text-center">
+                          {m.monthName.split(' ')[0].substring(0, 3)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* DESGLOSE MENSUAL DETALLADO TABLE WITH NEWEST MONTHS ON TOP */}
+              <div className="bg-slate-900/90 backdrop-blur-xl border border-white/15 rounded-3xl shadow-2xl overflow-hidden">
+                <div className="p-6 border-b border-white/15 flex justify-between items-center">
+                  <div>
+                    <h3 className="text-base font-black text-white uppercase tracking-wider flex items-center gap-2">
+                      <Table className="w-4 h-4 text-cyan-400" /> DESGLOSE MENSUAL DETALLADO ({selectedHistoricalYear === 'ALL' ? 'Todos los Años' : selectedHistoricalYear})
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Registro mes a mes de rentas cobradas, suministros, gastos fijos y balance neto (ordenado de más reciente a más antiguo).
+                    </p>
+                  </div>
+
+                  <span className="text-xs font-mono font-bold px-3 py-1 bg-cyan-950 text-cyan-300 rounded-full border border-cyan-500/30">
+                    {yearlyData.length} registros
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-white/15 text-xs font-extrabold text-cyan-300 uppercase tracking-wider bg-slate-950/70">
+                        <th className="py-4 px-6">Mes</th>
+                        <th className="py-4 px-6">Inquilino</th>
+                        <th className="py-4 px-6">Renta (€)</th>
+                        <th className="py-4 px-6">Luz (€)</th>
+                        <th className="py-4 px-6">Agua (€)</th>
+                        <th className="py-4 px-6">Gas (€)</th>
+                        <th className="py-4 px-6">Fijos / Averías</th>
+                        <th className="py-4 px-6">Total Ingreso</th>
+                        <th className="py-4 px-6">Total Gasto</th>
+                        <th className="py-4 px-6">Beneficio Neto</th>
+                        <th className="py-4 px-6">Estado</th>
+                        <th className="py-4 px-6 text-right">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/10 text-sm font-medium">
+                      {yearlyData.map((m) => {
+                        const isPaid = m.status === 'PAID';
+
+                        return (
+                          <tr key={m.key} className="hover:bg-white/5 transition-colors">
+                            <td className="py-4 px-6 font-bold text-white capitalize">{m.monthName}</td>
+                            <td className="py-4 px-6 text-slate-200">{m.tenantName || tenant.name}</td>
+                            <td className="py-4 px-6 font-mono font-bold text-emerald-400 tabular-nums">
+                              {m.rent.toFixed(2)} €
+                              <span className="block text-[10px] font-extrabold text-emerald-500">LIQUIDADA</span>
+                            </td>
+                            <td className="py-4 px-6 font-mono text-amber-300 tabular-nums">
+                              {m.elecCost > 0 ? (
+                                <>
+                                  {m.elecCost.toFixed(2)} €
+                                  <span className="block text-[10px] font-extrabold text-emerald-400">LIQUIDADA</span>
+                                </>
+                              ) : '-'}
+                            </td>
+                            <td className="py-4 px-6 font-mono text-cyan-300 tabular-nums">
+                              {m.waterCost > 0 ? (
+                                <>
+                                  {m.waterCost.toFixed(2)} €
+                                  <span className="block text-[10px] font-extrabold text-emerald-400">LIQUIDADA</span>
+                                </>
+                              ) : '-'}
+                            </td>
+                            <td className="py-4 px-6 font-mono text-rose-300 tabular-nums">
+                              {m.gasCost > 0 ? `${m.gasCost.toFixed(2)} €` : '-'}
+                            </td>
+                            <td className="py-4 px-6 font-mono text-slate-300 tabular-nums">
+                              {m.fixedCost > 0 ? `${m.fixedCost.toFixed(2)} €` : '-'}
+                            </td>
+                            <td className="py-4 px-6 font-mono font-bold text-white tabular-nums">
+                              {m.totalIngreso.toFixed(2)} €
+                            </td>
+                            <td className="py-4 px-6 font-mono font-bold text-rose-400 tabular-nums">
+                              {m.totalGasto.toFixed(2)} €
+                            </td>
+                            <td className="py-4 px-6 font-mono font-black text-cyan-400 text-base tabular-nums">
+                              {m.beneficioNeto.toFixed(2)} €
+                            </td>
+                            <td className="py-4 px-6">
+                              <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black shadow ${
+                                isPaid ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40' : 'bg-amber-950 text-amber-300 border border-amber-500/40'
+                              }`}>
+                                <span className={`w-2 h-2 rounded-full ${isPaid ? 'bg-emerald-400' : 'bg-amber-400'}`}></span>
+                                {isPaid ? 'COBRADO' : 'PENDIENTE'}
+                              </span>
+                            </td>
+                            <td className="py-4 px-6 text-right space-x-2">
+                              <button
+                                onClick={() => {
+                                  alert(`Detalle del mes ${m.monthName}:\nRenta: ${m.rent}€\nLuz: ${m.elecCost}€\nAgua: ${m.waterCost}€\nIngreso: ${m.totalIngreso}€\nGasto: ${m.totalGasto}€\nBeneficio: ${m.beneficioNeto}€`);
+                                }}
+                                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-xl border border-white/10"
+                              >
+                                Ver
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* TAB 5: BACKUP & CSV IMPORT */}
         {activeTab === 'backup' && (
@@ -2895,6 +3291,167 @@ export default function App() {
                 )}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CARGAR MES EN HISTORIAL (AÑOS ANTERIORES) */}
+      {isAddHistoricalModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-white/20 rounded-3xl max-w-lg w-full p-6 lg:p-8 space-y-6 shadow-2xl relative">
+            <button
+              onClick={() => setIsAddHistoricalModalOpen(false)}
+              className="absolute top-5 right-5 p-2 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-500 flex items-center justify-center text-slate-950 font-black shadow-lg">
+                <Plus className="w-6 h-6 stroke-[3]" />
+              </div>
+              <div>
+                <h3 className="text-lg font-black text-white">+ CARGAR MES EN HISTORIAL</h3>
+                <p className="text-xs text-slate-300">Añade datos de rentas y suministros para años anteriores (2025, 2024, 2023, 2022, 2021).</p>
+              </div>
+            </div>
+
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const yr = Number(histFormYear);
+              const mNum = Number(histFormMonthNum);
+              const monthKey = `${yr}-${String(mNum).padStart(2, '0')}`;
+              const monthNamesEs = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+              const monthName = `${monthNamesEs[mNum - 1]} ${yr}`;
+
+              const newEntry: CustomHistoricalEntry = {
+                id: 'h_' + Date.now(),
+                year: yr,
+                monthKey,
+                monthName,
+                tenantName: tenant.name,
+                rentAmount: parseFloat(histFormRent) || 0,
+                elecCost: parseFloat(histFormElec) || 0,
+                waterCost: parseFloat(histFormWater) || 0,
+                gasCost: parseFloat(histFormGas) || 0,
+                repairsCost: parseFloat(histFormRepairs) || 0,
+                status: histFormStatus
+              };
+
+              const filtered = customHistoricalEntries.filter(c => c.monthKey !== monthKey);
+              setCustomHistoricalEntries([newEntry, ...filtered]);
+              setIsAddHistoricalModalOpen(false);
+              setSelectedHistoricalYear(yr);
+              alert(`¡Mes de ${monthName} cargado correctamente en el historial!`);
+            }} className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs text-slate-400 font-bold uppercase block mb-1">Año</label>
+                  <select
+                    value={histFormYear}
+                    onChange={(e) => setHistFormYear(Number(e.target.value))}
+                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
+                  >
+                    {[2026, 2025, 2024, 2023, 2022, 2021, 2020].map(y => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-400 font-bold uppercase block mb-1">Mes</label>
+                  <select
+                    value={histFormMonthNum}
+                    onChange={(e) => setHistFormMonthNum(Number(e.target.value))}
+                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-cyan-500"
+                  >
+                    {['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'].map((m, idx) => (
+                      <option key={idx + 1} value={idx + 1}>{m}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs text-slate-400 font-bold uppercase block mb-1">Renta (€)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={histFormRent}
+                    onChange={(e) => setHistFormRent(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-400 font-bold uppercase block mb-1">Luz (€)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={histFormElec}
+                    onChange={(e) => setHistFormElec(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs text-slate-400 font-bold uppercase block mb-1">Agua (€)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={histFormWater}
+                    onChange={(e) => setHistFormWater(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-400 font-bold uppercase block mb-1">Gas (€)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={histFormGas}
+                    onChange={(e) => setHistFormGas(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-400 font-bold uppercase block mb-1">Averías (€)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={histFormRepairs}
+                    onChange={(e) => setHistFormRepairs(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/15 rounded-xl px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-400 font-bold uppercase block mb-1">Estado de Cobro</label>
+                <select
+                  value={histFormStatus}
+                  onChange={(e) => setHistFormStatus(e.target.value as any)}
+                  className="w-full bg-slate-950 border border-white/15 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-cyan-500 font-bold"
+                >
+                  <option value="PAID">🟢 COBRADO</option>
+                  <option value="PENDING">🟡 PENDIENTE</option>
+                </select>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  className="w-full py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 text-slate-950 font-black text-xs rounded-xl shadow-lg transition-all"
+                >
+                  GUARDAR E INCORPORAR AL HISTORIAL
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
