@@ -914,6 +914,68 @@ export default function App() {
     );
   };
 
+  // Smart Pending Sweep (Barrido Inteligente de facturas y meses pendientes de cobro)
+  const pendingSweep = useMemo(() => {
+    const now = new Date();
+    const currentYearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    // 1. Pending rent months up to current month (and previous uncollected)
+    const pendingRent = monthsList.filter(m => m.status === 'PENDING' && m.monthYear <= currentYearMonth);
+    const futurePendingRent = monthsList.filter(m => m.status === 'PENDING' && m.monthYear > currentYearMonth);
+
+    // 2. Pending electricity bills (sorted newest first)
+    const pendingElec = [...electricityExpenses].filter(e => e.status === 'PENDING').sort((a, b) => (b.periodStartDate || b.chargeDate || b.id).localeCompare(a.periodStartDate || a.chargeDate || a.id));
+
+    // 3. Pending water bills (sorted newest first)
+    const pendingWater = [...waterExpenses].filter(w => w.status === 'PENDING').sort((a, b) => (b.periodStartDate || b.chargeDate || b.id).localeCompare(a.periodStartDate || a.chargeDate || a.id));
+
+    // 4. Pending other expenses
+    const pendingOther = otherExpenses.filter(o => o.status === 'PENDING');
+
+    const totalRentAmount = pendingRent.reduce((acc, m) => acc + m.rentAmount, 0);
+    const totalElecAmount = pendingElec.reduce((acc, e) => acc + e.totalAmount, 0);
+    const totalWaterAmount = pendingWater.reduce((acc, w) => acc + w.totalAmount, 0);
+    const totalOtherAmount = pendingOther.reduce((acc, o) => acc + o.cost, 0);
+
+    const grandTotal = totalRentAmount + totalElecAmount + totalWaterAmount + totalOtherAmount;
+    const totalCount = pendingRent.length + pendingElec.length + pendingWater.length + pendingOther.length;
+
+    const allRentSelected = pendingRent.length === 0 || pendingRent.every(m => selectedRentMonths.includes(m.monthYear));
+    const allElecSelected = pendingElec.length === 0 || pendingElec.every(e => selectedElectricityIds.includes(e.id));
+    const allWaterSelected = pendingWater.length === 0 || pendingWater.every(w => selectedWaterIds.includes(w.id));
+    const allOtherSelected = pendingOther.length === 0 || pendingOther.every(o => selectedOtherIds.includes(o.id));
+    const isAllSelected = totalCount > 0 && allRentSelected && allElecSelected && allWaterSelected && allOtherSelected;
+
+    return {
+      pendingRent,
+      futurePendingRent,
+      pendingElec,
+      pendingWater,
+      pendingOther,
+      totalRentAmount,
+      totalElecAmount,
+      totalWaterAmount,
+      totalOtherAmount,
+      grandTotal,
+      totalCount,
+      isAllSelected
+    };
+  }, [monthsList, electricityExpenses, waterExpenses, otherExpenses, selectedRentMonths, selectedElectricityIds, selectedWaterIds, selectedOtherIds]);
+
+  const handleSelectAllPending = () => {
+    setSelectedRentMonths(pendingSweep.pendingRent.map(m => m.monthYear));
+    setSelectedElectricityIds(pendingSweep.pendingElec.map(e => e.id));
+    setSelectedWaterIds(pendingSweep.pendingWater.map(w => w.id));
+    setSelectedOtherIds(pendingSweep.pendingOther.map(o => o.id));
+  };
+
+  const handleClearAllDraftItems = () => {
+    setSelectedRentMonths([]);
+    setSelectedElectricityIds([]);
+    setSelectedWaterIds([]);
+    setSelectedOtherIds([]);
+  };
+
   // Quick action from Section 3 (Gastos y Suministros table) to add to draft and switch to billing
   const addSupplyToCurrentDraft = (type: 'WATER' | 'ELECTRICITY', id: string) => {
     if (type === 'WATER') {
@@ -971,9 +1033,10 @@ export default function App() {
       // Store remaining balance for next receipt
       setTenantAccumulatedBalance(remaining);
 
-      alert(`¡Recibo marcado como COBRADO!\n\nSe cobraron ${paidNum.toFixed(2)} €.\n${remaining > 0 ? `⚠️ Quedan ${remaining.toFixed(2)} € pendientes para el siguiente recibo.` : remaining < 0 ? `💰 Sobran ${Math.abs(remaining).toFixed(2)} € a favor del inquilino para el siguiente recibo.` : '✅ Saldo cubierto por completo.'}\n\nTodas las facturas y meses incluidos han pasado a estado PAGADO (verde).`);
+      // Open the official receipt view immediately
+      setSelectedReceiptForModal(newReceipt);
     } else {
-      alert(`¡Recibo guardado como PENDIENTE!\nPuedes revisarlo en el apartado 4.2 y marcarlo como cobrado cuando el inquilino efectúe el pago.`);
+      setSelectedReceiptForModal(newReceipt);
     }
 
     // Reset draft builder
@@ -2902,29 +2965,296 @@ export default function App() {
               </div>
             </div>
 
-            {/* 4.1 CREACIÓN DINÁMICA DE RECIBO POR FECHA (Punto 9 exacto del usuario) */}
+            {/* 4.1 CREACIÓN DINÁMICA DE RECIBO POR FECHA CON BARRIDO INTELIGENTE */}
             {billingSubTab === '4.1_builder' && (
               <div className="space-y-8">
-                {/* Information Callout */}
-                <div className="bg-gradient-to-r from-indigo-950/80 via-slate-900 to-slate-900 p-5 rounded-3xl border border-indigo-500/30 flex items-start gap-4">
-                  <div className="w-10 h-10 rounded-2xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0">
-                    <Info className="w-5 h-5" />
+                {/* 1. BARRIDO INTELIGENTE SUPERIOR DE FACTURAS Y MESES PENDIENTES */}
+                <div className="bg-gradient-to-r from-slate-900 via-slate-900/95 to-slate-950 border-2 border-cyan-500/40 rounded-3xl p-6 lg:p-8 space-y-6 shadow-2xl relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20"></div>
+
+                  {/* Header of Sweep */}
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/10 pb-5">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 flex items-center gap-1.5 shadow-sm">
+                          <Sparkles className="w-3.5 h-3.5 text-cyan-400" /> BARRIDO INTELIGENTE DE PENDIENTES
+                        </span>
+                        <span className="text-xs font-mono font-bold text-slate-400">
+                          {pendingSweep.totalCount} concepto(s) detectado(s)
+                        </span>
+                      </div>
+                      <h3 className="text-xl font-black text-white flex items-center gap-2">
+                        Facturas Sin Pagar y Meses de Renta a Cobrar
+                      </h3>
+                      <p className="text-xs text-slate-300">
+                        Barrido automático de facturas de luz y agua pendientes de liquidar junto a los meses de alquiler hasta el actual.
+                      </p>
+                    </div>
+
+                    {/* Master Action Buttons */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {draftItems.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleClearAllDraftItems}
+                          className="px-3.5 py-2.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-bold rounded-xl border border-white/10 transition-all flex items-center gap-1.5"
+                        >
+                          <X className="w-3.5 h-3.5" /> Limpiar Selección
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={handleSelectAllPending}
+                        className={`px-5 py-3 rounded-2xl font-black text-xs transition-all flex items-center gap-2 shadow-xl ${
+                          pendingSweep.isAllSelected
+                            ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 shadow-emerald-500/20'
+                            : 'bg-gradient-to-r from-cyan-500 via-teal-400 to-indigo-500 text-slate-950 hover:from-cyan-400 hover:to-indigo-400 shadow-cyan-500/30'
+                        }`}
+                      >
+                        {pendingSweep.isAllSelected ? (
+                          <>
+                            <CheckCircle className="w-4 h-4 text-slate-950" />
+                            <span>TODO AGREGADO ({pendingSweep.grandTotal.toFixed(2)} €)</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-4 h-4 text-slate-950" />
+                            <span>AGREGAR TODO AL RECIBO ({pendingSweep.grandTotal.toFixed(2)} €)</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
-                  <div className="text-xs text-slate-300 space-y-1">
-                    <p className="font-extrabold text-white text-sm">¿Cómo funciona esta emisión de recibo flexible?</p>
-                    <p>
-                      Los recibos se forman <strong>por fecha</strong> (puedes cobrar mensual, cada 2 meses o el periodo que necesites). Selecciona qué meses de renta y qué facturas de agua o luz deseas incluir hoy. Si alguna factura aún no ha llegado (ej. agua bimestral), quedará pendiente en amarillo y se liquidará automáticamente en el próximo recibo.
-                    </p>
+
+                  {/* Category Counters */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="bg-slate-950/70 p-3 rounded-2xl border border-white/10 flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-fuchsia-500/20 border border-fuchsia-500/30 flex items-center justify-center text-fuchsia-400 shrink-0">
+                        <Calendar className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-400 uppercase font-bold block">Rentas sin cobrar</span>
+                        <span className="text-sm font-black text-white font-mono">{pendingSweep.pendingRent.length} mes(es)</span>
+                        <span className="text-[10px] text-fuchsia-300 font-mono block">({pendingSweep.totalRentAmount.toFixed(2)} €)</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-950/70 p-3 rounded-2xl border border-white/10 flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                        <Zap className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-400 uppercase font-bold block">Facturas de Luz</span>
+                        <span className="text-sm font-black text-white font-mono">{pendingSweep.pendingElec.length} factura(s)</span>
+                        <span className="text-[10px] text-amber-300 font-mono block">({pendingSweep.totalElecAmount.toFixed(2)} € inq.)</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-950/70 p-3 rounded-2xl border border-white/10 flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
+                        <Droplet className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-400 uppercase font-bold block">Facturas de Agua</span>
+                        <span className="text-sm font-black text-white font-mono">{pendingSweep.pendingWater.length} factura(s)</span>
+                        <span className="text-[10px] text-cyan-300 font-mono block">({pendingSweep.totalWaterAmount.toFixed(2)} € inq.)</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-950/70 p-3 rounded-2xl border border-white/10 flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
+                        <Wrench className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-400 uppercase font-bold block">Otros / Averías</span>
+                        <span className="text-sm font-black text-white font-mono">{pendingSweep.pendingOther.length} gasto(s)</span>
+                        <span className="text-[10px] text-indigo-300 font-mono block">({pendingSweep.totalOtherAmount.toFixed(2)} €)</span>
+                      </div>
+                    </div>
                   </div>
+
+                  {/* Grid of Interactive Pending Items */}
+                  {pendingSweep.totalCount === 0 ? (
+                    <div className="p-8 bg-slate-950/80 rounded-2xl border border-dashed border-emerald-500/40 text-center space-y-2">
+                      <CheckCircle className="w-10 h-10 text-emerald-400 mx-auto" />
+                      <h4 className="text-sm font-black text-white">¡No hay facturas ni rentas pendientes!</h4>
+                      <p className="text-xs text-slate-400">
+                        Todas las facturas registradas y los meses de alquiler hasta la fecha están saldados y al día.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center text-xs text-slate-400">
+                        <span className="font-bold uppercase tracking-wider text-[11px] text-slate-300">
+                          Selecciona o desmarca los conceptos a incluir en este recibo:
+                        </span>
+                        <span>{draftItems.length} concepto(s) sumados actualmente</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {/* Pending Rent Cards */}
+                        {pendingSweep.pendingRent.map((m) => {
+                          const isSelected = selectedRentMonths.includes(m.monthYear);
+                          return (
+                            <div
+                              key={m.id}
+                              onClick={() => toggleRentMonth(m.monthYear)}
+                              className={`p-4 rounded-2xl border transition-all cursor-pointer select-none relative group ${
+                                isSelected
+                                  ? 'bg-fuchsia-950/50 border-fuchsia-500/60 shadow-lg shadow-fuchsia-950/50'
+                                  : 'bg-slate-950/80 border-white/10 hover:border-fuchsia-500/30'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <div className={`w-5 h-5 rounded-lg border flex items-center justify-center transition-all ${
+                                    isSelected ? 'bg-fuchsia-500 border-fuchsia-400 text-white' : 'border-white/30 bg-slate-900'
+                                  }`}>
+                                    {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                                  </div>
+                                  <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/30">
+                                    Renta
+                                  </span>
+                                </div>
+                                <span className="font-mono font-black text-white text-sm">{m.rentAmount.toFixed(2)} €</span>
+                              </div>
+
+                              <div className="mt-2.5">
+                                <span className="font-black text-white text-xs block">{m.monthName}</span>
+                                <span className="text-[11px] text-slate-400 mt-0.5 block">Tarifa mensual pactada</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {/* Pending Electricity Cards */}
+                        {pendingSweep.pendingElec.map((e) => {
+                          const isSelected = selectedElectricityIds.includes(e.id);
+                          return (
+                            <div
+                              key={e.id}
+                              onClick={() => toggleElectricity(e.id)}
+                              className={`p-4 rounded-2xl border transition-all cursor-pointer select-none relative group ${
+                                isSelected
+                                  ? 'bg-amber-950/50 border-amber-500/60 shadow-lg shadow-amber-950/50'
+                                  : 'bg-slate-950/80 border-white/10 hover:border-amber-500/30'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <div className={`w-5 h-5 rounded-lg border flex items-center justify-center transition-all ${
+                                    isSelected ? 'bg-amber-500 border-amber-400 text-slate-950 font-black' : 'border-white/30 bg-slate-900'
+                                  }`}>
+                                    {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                                  </div>
+                                  <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                    Luz ({supplyRules.electricity}%)
+                                  </span>
+                                </div>
+                                <span className="font-mono font-black text-amber-300 text-sm">{e.totalAmount.toFixed(2)} €</span>
+                              </div>
+
+                              <div className="mt-2.5">
+                                <span className="font-black text-white text-xs block">{e.company}</span>
+                                <span className="text-[11px] text-slate-300 mt-0.5 block font-mono">
+                                  Factura: {(e.fullInvoiceTotal || e.totalAmount * 2).toFixed(2)} € • {e.kwhConsumed} kWh
+                                </span>
+                                <span className="text-[10px] text-slate-400 mt-0.5 block truncate">
+                                  Periodo: {e.periodRange || e.chargeDate}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {/* Pending Water Cards */}
+                        {pendingSweep.pendingWater.map((w) => {
+                          const isSelected = selectedWaterIds.includes(w.id);
+                          return (
+                            <div
+                              key={w.id}
+                              onClick={() => toggleWater(w.id)}
+                              className={`p-4 rounded-2xl border transition-all cursor-pointer select-none relative group ${
+                                isSelected
+                                  ? 'bg-cyan-950/50 border-cyan-500/60 shadow-lg shadow-cyan-950/50'
+                                  : 'bg-slate-950/80 border-white/10 hover:border-cyan-500/30'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <div className={`w-5 h-5 rounded-lg border flex items-center justify-center transition-all ${
+                                    isSelected ? 'bg-cyan-500 border-cyan-400 text-slate-950 font-black' : 'border-white/30 bg-slate-900'
+                                  }`}>
+                                    {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                                  </div>
+                                  <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                                    Agua ({supplyRules.water}%)
+                                  </span>
+                                </div>
+                                <span className="font-mono font-black text-cyan-300 text-sm">{w.totalAmount.toFixed(2)} €</span>
+                              </div>
+
+                              <div className="mt-2.5">
+                                <span className="font-black text-white text-xs block">{w.company}</span>
+                                <span className="text-[11px] text-slate-300 mt-0.5 block font-mono">
+                                  Factura: {(w.fullInvoiceTotal || w.totalAmount * 2).toFixed(2)} € • {w.m3Consumed} m³
+                                </span>
+                                <span className="text-[10px] text-slate-400 mt-0.5 block truncate">
+                                  Periodo: {w.periodRange || w.chargeDate} (Basura {w.breakdown?.wasteCollection || 28.35}€)
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {/* Pending Other Cards */}
+                        {pendingSweep.pendingOther.map((o) => {
+                          const isSelected = selectedOtherIds.includes(o.id);
+                          return (
+                            <div
+                              key={o.id}
+                              onClick={() => toggleOther(o.id)}
+                              className={`p-4 rounded-2xl border transition-all cursor-pointer select-none relative group ${
+                                isSelected
+                                  ? 'bg-indigo-950/50 border-indigo-500/60 shadow-lg shadow-indigo-950/50'
+                                  : 'bg-slate-950/80 border-white/10 hover:border-indigo-500/30'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <div className={`w-5 h-5 rounded-lg border flex items-center justify-center transition-all ${
+                                    isSelected ? 'bg-indigo-500 border-indigo-400 text-white' : 'border-white/30 bg-slate-900'
+                                  }`}>
+                                    {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                                  </div>
+                                  <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                                    Gasto / Avería
+                                  </span>
+                                </div>
+                                <span className="font-mono font-black text-indigo-300 text-sm">{o.cost.toFixed(2)} €</span>
+                              </div>
+
+                              <div className="mt-2.5">
+                                <span className="font-black text-white text-xs block">{o.name}</span>
+                                <span className="text-[11px] text-slate-400 mt-0.5 block truncate">{o.date} • {o.notes}</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
+                {/* 2. DETALLE DEL RECIBO EN CURSO Y CIERRE */}
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                  {/* LEFT: Items Selector (Rents, Water, Electricity, Other, Previous Balance) */}
+                  {/* LEFT: Config, Desglose de Conceptos Incluidos, Saldo Arrastrado y Opciones Avanzadas */}
                   <div className="lg:col-span-7 space-y-6">
-                    {/* General Receipt Config (Date, Number, Title) */}
+                    {/* Parámetros de la Liquidación */}
                     <div className="bg-slate-900/80 backdrop-blur-xl border border-white/15 rounded-3xl p-6 space-y-4 shadow-xl">
-                      <h3 className="text-base font-black text-white flex items-center gap-2">
-                        <Calendar className="w-4 h-4 text-cyan-400" /> Parámetros de la Liquidación
+                      <h3 className="text-sm font-black text-white flex items-center gap-2">
+                        <Calendar className="w-4 h-4 text-cyan-400" /> Parámetros del Recibo
                       </h3>
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                         <div>
@@ -2957,219 +3287,126 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Section 1: Meses de Alquiler Pendientes */}
+                    {/* Desglose de Conceptos Añadidos al Recibo */}
                     <div className="bg-slate-900/80 backdrop-blur-xl border border-white/15 rounded-3xl p-6 space-y-4 shadow-xl">
                       <div className="flex justify-between items-center">
                         <h4 className="text-sm font-black text-white flex items-center gap-2">
-                          <Calendar className="w-4 h-4 text-fuchsia-400" /> 1. Meses de Alquiler a Cobrar
+                          <FileText className="w-4 h-4 text-cyan-400" /> Conceptos Añadidos ({draftItems.length})
                         </h4>
-                        <span className="text-xs text-slate-400">{selectedRentMonths.length} seleccionado(s)</span>
+                        <span className="text-xs font-mono font-bold text-cyan-300">Subtotal: {draftSubtotal.toFixed(2)} €</span>
                       </div>
 
-                      <div className="space-y-2">
-                        {monthsList.map(m => {
-                          const isAlreadyPaid = m.status === 'PAID';
-                          const isSelected = selectedRentMonths.includes(m.monthYear);
-
-                          return (
+                      {draftItems.length === 0 ? (
+                        <div className="p-6 bg-slate-950/60 rounded-2xl border border-dashed border-white/15 text-center space-y-2">
+                          <p className="text-xs text-slate-400">
+                            No has agregado ningún concepto todavía. Pulsa en <strong className="text-cyan-400">"AGREGAR TODO AL RECIBO"</strong> en la bandeja superior o haz clic en las tarjetas que desees cobrar.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2.5">
+                          {draftItems.map((it, idx) => (
                             <div
-                              key={m.id}
-                              className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between text-xs ${
-                                isAlreadyPaid
-                                  ? 'bg-slate-950/40 border-white/5 opacity-60'
-                                  : isSelected
-                                  ? 'bg-fuchsia-950/50 border-fuchsia-500/50 shadow-md'
-                                  : 'bg-slate-950/80 border-white/10 hover:border-white/20'
-                              }`}
+                              key={idx}
+                              className="p-3.5 bg-slate-950/80 rounded-2xl border border-white/10 flex items-center justify-between text-xs hover:border-white/20 transition-all"
                             >
-                              <div>
-                                <span className="font-extrabold text-white text-sm block">{m.monthName}</span>
-                                <span className="text-slate-400 text-[11px] font-mono">Tarifa: {m.rentAmount.toFixed(2)} €</span>
-                              </div>
-
-                              <div className="flex items-center gap-3">
-                                {isAlreadyPaid ? (
-                                  <span className="px-2.5 py-1 rounded-full bg-emerald-950 text-emerald-400 font-bold text-[10px] border border-emerald-500/30">
-                                    Ya cobrado
+                              <div className="pr-3 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                                    it.type === 'RENT' ? 'bg-fuchsia-500/20 text-fuchsia-300' :
+                                    it.type === 'ELECTRICITY' ? 'bg-amber-500/20 text-amber-300' :
+                                    it.type === 'WATER' ? 'bg-cyan-500/20 text-cyan-300' :
+                                    'bg-indigo-500/20 text-indigo-300'
+                                  }`}>
+                                    {it.type === 'RENT' ? 'Renta' : it.type === 'ELECTRICITY' ? 'Luz' : it.type === 'WATER' ? 'Agua' : 'Gasto'}
                                   </span>
-                                ) : (
-                                  <button
-                                    onClick={() => toggleRentMonth(m.monthYear)}
-                                    className={`px-3 py-1.5 rounded-xl font-black transition-all flex items-center gap-1.5 ${
-                                      isSelected
-                                        ? 'bg-fuchsia-600 text-white shadow'
-                                        : 'bg-white/10 hover:bg-white/20 text-slate-200'
-                                    }`}
-                                  >
-                                    {isSelected ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-                                    {isSelected ? 'Incluido' : 'Incluir en Recibo'}
-                                  </button>
+                                  <span className="font-extrabold text-white text-xs truncate">{it.description}</span>
+                                </div>
+                                {it.detail && (
+                                  <p className="text-[11px] text-slate-400 mt-1">{it.detail}</p>
                                 )}
                               </div>
+
+                              <div className="flex items-center gap-3 shrink-0">
+                                <span className="font-mono font-black text-white text-sm">{it.amount.toFixed(2)} €</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (it.type === 'RENT') toggleRentMonth(it.period || '');
+                                    else if (it.type === 'ELECTRICITY') toggleElectricity(it.itemId);
+                                    else if (it.type === 'WATER') toggleWater(it.itemId);
+                                    else if (it.type === 'OTHER') toggleOther(it.itemId);
+                                  }}
+                                  className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-white/5 rounded-lg transition-colors"
+                                  title="Quitar concepto"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
                             </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* Section 2: Facturas de Agua Pendientes (Bimensual) */}
-                    <div className="bg-slate-900/80 backdrop-blur-xl border border-white/15 rounded-3xl p-6 space-y-4 shadow-xl">
-                      <div className="flex justify-between items-center">
-                        <h4 className="text-sm font-black text-white flex items-center gap-2">
-                          <Droplet className="w-4 h-4 text-cyan-400" /> 2. Facturas de Agua Pendientes
-                        </h4>
-                        <span className="text-xs text-slate-400">{selectedWaterIds.length} seleccionada(s)</span>
-                      </div>
-
-                      {waterExpenses.filter(w => w.status === 'PENDING').length === 0 ? (
-                        <p className="text-xs text-slate-400 italic p-3 bg-slate-950/60 rounded-2xl">
-                          No hay facturas de agua pendientes. Si recibes una factura más adelante, se liquidará en el siguiente periodo.
-                        </p>
-                      ) : (
-                        <div className="space-y-2">
-                          {[...waterExpenses].filter(w => w.status === 'PENDING').sort((a, b) => (b.chargeDate || b.receptionDate).localeCompare(a.chargeDate || a.receptionDate)).map(w => {
-                            const isSelected = selectedWaterIds.includes(w.id);
-                            return (
-                              <div
-                                key={w.id}
-                                className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between text-xs ${
-                                  isSelected
-                                    ? 'bg-cyan-950/50 border-cyan-500/50 shadow-md'
-                                    : 'bg-slate-950/80 border-white/10 hover:border-white/20'
-                                }`}
-                              >
-                                <div>
-                                  <span className="font-extrabold text-white text-sm block">Agua {w.company}</span>
-                                  <span className="text-slate-400 text-[11px] font-mono">Periodo: {w.periodRange || w.chargeDate} • Factura total: {(w.fullInvoiceTotal || w.totalAmount * 2).toFixed(2)} €</span>
-                                </div>
-
-                                <div className="flex items-center gap-3">
-                                  <span className="font-mono font-black text-cyan-300 text-sm">
-                                    {w.totalAmount.toFixed(2)} € <span className="text-[10px] text-slate-400 font-normal">({supplyRules.water}%)</span>
-                                  </span>
-                                  <button
-                                    onClick={() => toggleWater(w.id)}
-                                    className={`px-3 py-1.5 rounded-xl font-black transition-all flex items-center gap-1.5 ${
-                                      isSelected
-                                        ? 'bg-cyan-600 text-white shadow'
-                                        : 'bg-white/10 hover:bg-white/20 text-slate-200'
-                                    }`}
-                                  >
-                                    {isSelected ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-                                    {isSelected ? 'Incluido' : 'Incluir'}
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
+                          ))}
                         </div>
                       )}
                     </div>
 
-                    {/* Section 3: Facturas de Luz Pendientes */}
-                    <div className="bg-slate-900/80 backdrop-blur-xl border border-white/15 rounded-3xl p-6 space-y-4 shadow-xl">
-                      <div className="flex justify-between items-center">
-                        <h4 className="text-sm font-black text-white flex items-center gap-2">
-                          <Zap className="w-4 h-4 text-amber-400" /> 3. Facturas de Luz Pendientes
-                        </h4>
-                        <span className="text-xs text-slate-400">{selectedElectricityIds.length} seleccionada(s)</span>
+                    {/* Saldo Arrastrado del Recibo Anterior */}
+                    <div className="bg-slate-900/80 backdrop-blur-xl border border-white/15 rounded-3xl p-6 space-y-3 shadow-xl">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-black text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                          <CreditCard className="w-3.5 h-3.5 text-cyan-400" /> Saldo Arrastrado del Recibo Anterior (€)
+                        </label>
+                        <span className="text-[11px] text-slate-400">Positivo = Deuda | Negativo = A favor</span>
                       </div>
-
-                      {electricityExpenses.filter(e => e.status === 'PENDING').length === 0 ? (
-                        <p className="text-xs text-slate-400 italic p-3 bg-slate-950/60 rounded-2xl">
-                          No hay facturas de luz pendientes de cobro.
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={draftPreviousBalance}
+                        onChange={(e) => setDraftPreviousBalance(parseFloat(e.target.value) || 0)}
+                        className="w-full bg-slate-950 border border-white/20 rounded-xl px-3.5 py-2.5 text-white font-mono font-bold text-sm focus:outline-none focus:border-cyan-500"
+                      />
+                      {draftPreviousBalance !== 0 && (
+                        <p className={`text-[11px] font-bold ${draftPreviousBalance > 0 ? 'text-amber-400' : 'text-cyan-400'}`}>
+                          {draftPreviousBalance > 0
+                            ? `⚠️ Se suman ${draftPreviousBalance.toFixed(2)} € que quedaron pendientes de pago en el recibo anterior.`
+                            : `💰 Se descuentan ${Math.abs(draftPreviousBalance).toFixed(2)} € que el inquilino abonó de más en el recibo anterior.`}
                         </p>
-                      ) : (
-                        <div className="space-y-2">
-                          {[...electricityExpenses].filter(e => e.status === 'PENDING').sort((a, b) => (b.chargeDate || b.receptionDate).localeCompare(a.chargeDate || a.receptionDate)).map(e => {
-                            const isSelected = selectedElectricityIds.includes(e.id);
-                            return (
-                              <div
-                                key={e.id}
-                                className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between text-xs ${
-                                  isSelected
-                                    ? 'bg-amber-950/50 border-amber-500/50 shadow-md'
-                                    : 'bg-slate-950/80 border-white/10 hover:border-white/20'
-                                }`}
-                              >
-                                <div>
-                                  <span className="font-extrabold text-white text-sm block">Luz {e.company}</span>
-                                  <span className="text-slate-400 text-[11px] font-mono">Periodo: {e.periodRange || e.chargeDate} • Factura total: {(e.fullInvoiceTotal || e.totalAmount * 2).toFixed(2)} €</span>
-                                </div>
-
-                                <div className="flex items-center gap-3">
-                                  <span className="font-mono font-black text-amber-300 text-sm">
-                                    {e.totalAmount.toFixed(2)} € <span className="text-[10px] text-slate-400 font-normal">({supplyRules.electricity}%)</span>
-                                  </span>
-                                  <button
-                                    onClick={() => toggleElectricity(e.id)}
-                                    className={`px-3 py-1.5 rounded-xl font-black transition-all flex items-center gap-1.5 ${
-                                      isSelected
-                                        ? 'bg-amber-600 text-white shadow'
-                                        : 'bg-white/10 hover:bg-white/20 text-slate-200'
-                                    }`}
-                                  >
-                                    {isSelected ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-                                    {isSelected ? 'Incluido' : 'Incluir'}
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
                       )}
                     </div>
 
-                    {/* Section 4: Otros Gastos Pendientes */}
-                    {otherExpenses.filter(o => o.status === 'PENDING').length > 0 && (
-                      <div className="bg-slate-900/80 backdrop-blur-xl border border-white/15 rounded-3xl p-6 space-y-4 shadow-xl">
-                        <div className="flex justify-between items-center">
-                          <h4 className="text-sm font-black text-white flex items-center gap-2">
-                            <Wrench className="w-4 h-4 text-indigo-400" /> 4. Otros Gastos / Averías
-                          </h4>
-                          <span className="text-xs text-slate-400">{selectedOtherIds.length} seleccionado(s)</span>
-                        </div>
-
-                        <div className="space-y-2">
-                          {otherExpenses.filter(o => o.status === 'PENDING').map(o => {
-                            const isSelected = selectedOtherIds.includes(o.id);
+                    {/* Meses Futuros Adelantados (Opcional) */}
+                    {pendingSweep.futurePendingRent.length > 0 && (
+                      <details className="bg-slate-900/60 border border-white/10 rounded-3xl p-5 text-xs text-slate-400 group">
+                        <summary className="cursor-pointer font-bold text-white hover:text-cyan-400 transition-colors flex items-center justify-between select-none">
+                          <span className="flex items-center gap-2">
+                            <Calendar className="w-4 h-4 text-fuchsia-400" />
+                            Meses de Renta Futuros (Cobro por adelantado)
+                          </span>
+                          <span className="text-[11px] text-slate-400">{pendingSweep.futurePendingRent.length} disponible(s)</span>
+                        </summary>
+                        <div className="mt-3 space-y-2 pt-3 border-t border-white/10">
+                          {pendingSweep.futurePendingRent.map((m) => {
+                            const isSelected = selectedRentMonths.includes(m.monthYear);
                             return (
                               <div
-                                key={o.id}
-                                className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between text-xs ${
-                                  isSelected
-                                    ? 'bg-indigo-950/50 border-indigo-500/50 shadow-md'
-                                    : 'bg-slate-950/80 border-white/10 hover:border-white/20'
+                                key={m.id}
+                                onClick={() => toggleRentMonth(m.monthYear)}
+                                className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer ${
+                                  isSelected ? 'bg-fuchsia-950/40 border-fuchsia-500/50 text-white' : 'bg-slate-950/60 border-white/10 hover:border-white/20'
                                 }`}
                               >
-                                <div>
-                                  <span className="font-extrabold text-white text-sm block">{o.name}</span>
-                                  <span className="text-slate-400 text-[11px] font-mono">{o.date} • {o.notes}</span>
-                                </div>
-
-                                <div className="flex items-center gap-3">
-                                  <span className="font-mono font-black text-indigo-300 text-sm">{o.cost.toFixed(2)} €</span>
-                                  <button
-                                    onClick={() => toggleOther(o.id)}
-                                    className={`px-3 py-1.5 rounded-xl font-black transition-all flex items-center gap-1.5 ${
-                                      isSelected ? 'bg-indigo-600 text-white shadow' : 'bg-white/10 hover:bg-white/20 text-slate-200'
-                                    }`}
-                                  >
-                                    {isSelected ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-                                    {isSelected ? 'Incluido' : 'Incluir'}
-                                  </button>
-                                </div>
+                                <span>{m.monthName}</span>
+                                <span className="font-mono font-bold">{m.rentAmount.toFixed(2)} €</span>
                               </div>
                             );
                           })}
                         </div>
-                      </div>
+                      </details>
                     )}
                   </div>
 
-                  {/* RIGHT: Live Preview, Arrears adjustment, Real Amount Paid, and WhatsApp Note */}
+                  {/* RIGHT: Live Preview, Arrears, WhatsApp Note & Official Close */}
                   <div className="lg:col-span-5 space-y-6">
                     <div className="bg-slate-900/90 backdrop-blur-xl border border-cyan-500/30 rounded-3xl p-6 lg:p-8 space-y-6 shadow-2xl sticky top-24">
+                      {/* Header of summary */}
                       <div className="flex items-center justify-between border-b border-white/15 pb-4">
                         <div>
                           <h3 className="text-lg font-black text-white flex items-center gap-2">
@@ -3177,66 +3414,20 @@ export default function App() {
                           </h3>
                           <p className="text-xs text-slate-400 font-mono mt-0.5">{draftReceiptNumber}</p>
                         </div>
-                        <span className="px-3 py-1 rounded-full text-xs font-black bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                          Borrador en curso
+                        <span className="px-3 py-1 rounded-full text-xs font-black bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                          En preparación
                         </span>
                       </div>
 
-                      {/* Itemized List */}
+                      {/* Financial Math Summary */}
                       <div className="space-y-3">
-                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">Conceptos a liquidar</span>
-                        {draftItems.length === 0 ? (
-                          <div className="p-4 bg-slate-950/80 rounded-2xl border border-dashed border-white/20 text-center text-xs text-slate-400">
-                            No has incluido ningún mes ni suministro aún. Haz clic en "Incluir" a la izquierda.
-                          </div>
-                        ) : (
-                          <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                            {draftItems.map((item, idx) => (
-                              <div key={idx} className="bg-slate-950/80 p-3 rounded-2xl border border-white/10 flex items-center justify-between text-xs">
-                                <div className="pr-2">
-                                  <p className="font-extrabold text-white">{item.description}</p>
-                                  {item.detail && <p className="text-[10px] text-slate-400">{item.detail}</p>}
-                                </div>
-                                <span className="font-mono font-black text-white text-sm shrink-0">{item.amount.toFixed(2)} €</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Saldo Arrastrado del Recibo Anterior (INCISO EXACTO DEL USUARIO: 659€ pagando 600€ o 700€) */}
-                      <div className="bg-slate-950/90 p-4 rounded-2xl border border-white/15 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <label className="text-xs font-black text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-                            <CreditCard className="w-3.5 h-3.5 text-cyan-400" /> Saldo del Recibo Anterior (€)
-                          </label>
-                          <span className="text-[11px] text-slate-400">Positivo = Deuda | Negativo = A favor</span>
-                        </div>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={draftPreviousBalance}
-                          onChange={(e) => setDraftPreviousBalance(parseFloat(e.target.value) || 0)}
-                          className="w-full bg-slate-900 border border-white/20 rounded-xl px-3.5 py-2.5 text-white font-mono font-bold text-sm focus:outline-none focus:border-cyan-500"
-                        />
-                        {draftPreviousBalance !== 0 && (
-                          <p className={`text-[11px] font-bold ${draftPreviousBalance > 0 ? 'text-amber-400' : 'text-cyan-400'}`}>
-                            {draftPreviousBalance > 0
-                              ? `⚠️ Se suman ${draftPreviousBalance.toFixed(2)} € que quedaron pendientes de la liquidación anterior.`
-                              : `💰 Se descuentan ${Math.abs(draftPreviousBalance).toFixed(2)} € que el inquilino tenía a su favor.`}
-                          </p>
-                        )}
-                      </div>
-
-                      {/* Subtotal, Total y Cobro Real */}
-                      <div className="border-t border-white/15 pt-4 space-y-3">
                         <div className="flex justify-between text-xs text-slate-400">
-                          <span>Suma de conceptos:</span>
+                          <span>Suma de conceptos ({draftItems.length}):</span>
                           <span className="font-mono font-bold text-white">{draftSubtotal.toFixed(2)} €</span>
                         </div>
                         {draftPreviousBalance !== 0 && (
                           <div className="flex justify-between text-xs text-slate-400">
-                            <span>Ajuste saldo anterior:</span>
+                            <span>Ajuste saldo recibo anterior:</span>
                             <span className="font-mono font-bold text-cyan-300">
                               {draftPreviousBalance > 0 ? `+${draftPreviousBalance.toFixed(2)}` : draftPreviousBalance.toFixed(2)} €
                             </span>
@@ -3246,45 +3437,44 @@ export default function App() {
                           <span>TOTAL A COBRAR:</span>
                           <span className="font-mono text-2xl text-cyan-400">{draftTotalAmount.toFixed(2)} €</span>
                         </div>
-
-                        {/* Importe Real Pagado por el Inquilino */}
-                        <div className="bg-slate-950/90 p-4 rounded-2xl border border-white/15 space-y-2">
-                          <label className="text-xs font-black text-slate-200 uppercase tracking-wider block">
-                            Importe Real Pagado por el Inquilino (€)
-                          </label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            placeholder={`Por defecto: ${draftTotalAmount.toFixed(2)}`}
-                            value={draftAmountPaid}
-                            onChange={(e) => setDraftAmountPaid(e.target.value)}
-                            className="w-full bg-slate-900 border border-white/20 rounded-xl px-3.5 py-2.5 text-white font-mono font-black text-base focus:outline-none focus:border-cyan-500"
-                          />
-
-                          {/* Dynamic Feedback on Partial / Excess Payment */}
-                          {draftRemainingBalance > 0 ? (
-                            <div className="p-3 bg-amber-950/60 border border-amber-500/40 rounded-xl text-xs text-amber-300 space-y-1">
-                              <span className="font-extrabold block">⚠️ Pago parcial (Faltan {draftRemainingBalance.toFixed(2)} €)</span>
-                              <p className="text-[11px] text-slate-300">
-                                Estos <strong>{draftRemainingBalance.toFixed(2)} €</strong> quedarán como deuda pendiente para arrastrarse y cobrarse automáticamente en el siguiente recibo.
-                              </p>
-                            </div>
-                          ) : draftRemainingBalance < 0 ? (
-                            <div className="p-3 bg-cyan-950/60 border border-cyan-500/40 rounded-xl text-xs text-cyan-300 space-y-1">
-                              <span className="font-extrabold block">🎉 Pago en exceso (Sobran {Math.abs(draftRemainingBalance).toFixed(2)} €)</span>
-                              <p className="text-[11px] text-slate-300">
-                                Estos <strong>{Math.abs(draftRemainingBalance).toFixed(2)} €</strong> quedarán como saldo a favor del inquilino y se descontarán en el siguiente recibo.
-                              </p>
-                            </div>
-                          ) : (
-                            <p className="text-[11px] text-emerald-400 font-bold flex items-center gap-1">
-                              <Check className="w-3.5 h-3.5" /> Pago exacto al céntimo. Saldo totalmente liquidado.
-                            </p>
-                          )}
-                        </div>
                       </div>
 
-                      {/* WhatsApp / Explanatory Note Generator (Punto 9 exacto) */}
+                      {/* Real Amount Paid */}
+                      <div className="bg-slate-950/90 p-4 rounded-2xl border border-white/15 space-y-2">
+                        <label className="text-xs font-black text-slate-200 uppercase tracking-wider block">
+                          Importe Real Pagado por el Inquilino (€)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder={`Por defecto: ${draftTotalAmount.toFixed(2)}`}
+                          value={draftAmountPaid}
+                          onChange={(e) => setDraftAmountPaid(e.target.value)}
+                          className="w-full bg-slate-900 border border-white/20 rounded-xl px-3.5 py-2.5 text-white font-mono font-black text-base focus:outline-none focus:border-cyan-500"
+                        />
+
+                        {draftRemainingBalance > 0 ? (
+                          <div className="p-3 bg-amber-950/60 border border-amber-500/40 rounded-xl text-xs text-amber-300 space-y-1">
+                            <span className="font-extrabold block">⚠️ Pago parcial (Faltan {draftRemainingBalance.toFixed(2)} €)</span>
+                            <p className="text-[11px] text-slate-300">
+                              Quedarán como deuda pendiente para arrastrarse al siguiente recibo.
+                            </p>
+                          </div>
+                        ) : draftRemainingBalance < 0 ? (
+                          <div className="p-3 bg-cyan-950/60 border border-cyan-500/40 rounded-xl text-xs text-cyan-300 space-y-1">
+                            <span className="font-extrabold block">🎉 Pago en exceso (Sobran {Math.abs(draftRemainingBalance).toFixed(2)} €)</span>
+                            <p className="text-[11px] text-slate-300">
+                              Quedarán como saldo a favor del inquilino y se descontarán en el siguiente recibo.
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-emerald-400 font-bold flex items-center gap-1">
+                            <Check className="w-3.5 h-3.5" /> Pago exacto al céntimo. Saldo totalmente liquidado.
+                          </p>
+                        )}
+                      </div>
+
+                      {/* WhatsApp / Explanatory Note */}
                       <div className="space-y-2">
                         <div className="flex justify-between items-center">
                           <label className="text-xs font-black text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
@@ -3292,12 +3482,10 @@ export default function App() {
                           </label>
                           <button
                             type="button"
-                            onClick={() => {
-                              setIsNoteManuallyEdited(false);
-                            }}
+                            onClick={() => setIsNoteManuallyEdited(false)}
                             className="text-[11px] text-cyan-400 hover:underline"
                           >
-                            Regenerar automática
+                            Regenerar
                           </button>
                         </div>
                         <textarea
@@ -3318,21 +3506,26 @@ export default function App() {
                         </button>
                       </div>
 
-                      {/* Primary Actions: Guardar como Pendiente / Marcar como Cobrado */}
+                      {/* Primary Actions: CERRAR Y EMITIR RECIBO */}
                       <div className="pt-4 border-t border-white/15 space-y-3">
                         <button
                           type="button"
+                          disabled={draftItems.length === 0 && draftPreviousBalance === 0}
                           onClick={() => handleSaveReceipt(true)}
-                          className="w-full py-4 bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 hover:from-emerald-400 text-slate-950 font-black text-sm rounded-2xl shadow-xl shadow-emerald-500/25 transition-all flex items-center justify-center gap-2"
+                          className="w-full py-4 bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 hover:from-emerald-400 text-slate-950 font-black text-sm rounded-2xl shadow-xl shadow-emerald-500/25 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          <CheckCircle className="w-5 h-5" /> CONFIRMAR Y MARCAR COMO COBRADO
+                          <CheckCircle className="w-5 h-5 text-slate-950" />
+                          <span>🔒 CERRAR Y EMITIR RECIBO OFICIAL (COBRADO)</span>
                         </button>
+
                         <button
                           type="button"
+                          disabled={draftItems.length === 0 && draftPreviousBalance === 0}
                           onClick={() => handleSaveReceipt(false)}
-                          className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-2xl border border-white/10 transition-all flex items-center justify-center gap-2"
+                          className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-2xl border border-white/10 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
                         >
-                          <Clock className="w-4 h-4 text-amber-400" /> Guardar como Recibo Pendiente (Emitir)
+                          <Clock className="w-4 h-4 text-amber-400" />
+                          <span>Guardar como Recibo Pendiente de Pago</span>
                         </button>
                       </div>
                     </div>
