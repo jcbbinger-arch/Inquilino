@@ -645,11 +645,13 @@ export default function App() {
     localStorage.setItem('inquilinopro_custom_history', JSON.stringify(customHistoricalEntries));
   }, [tenant, advances, rentRates, supplyRules, waterExpenses, electricityExpenses, otherExpenses, receipts, tenantAccumulatedBalance, customHistoricalEntries]);
 
-  // AI Modal State
+  // AI Modal State for PDF & Image OCR
   const [isScanning, setIsScanning] = useState(false);
   const [aiModalType, setAiModalType] = useState<'WATER' | 'ELECTRICITY' | null>(null);
   const [rawAiInput, setRawAiInput] = useState('');
-  const [aiImageBase64, setAiImageBase64] = useState<string | null>(null);
+  const [uploadedPdfBase64, setUploadedPdfBase64] = useState<string | null>(null);
+  const [uploadedPdfInfo, setUploadedPdfInfo] = useState<{ name: string; size: number; type: string } | null>(null);
+  const [isDraggingPdf, setIsDraggingPdf] = useState(false);
 
   // Dedicated Audit Inspector and Alert States
   const [auditedBillPreview, setAuditedBillPreview] = useState<{
@@ -1045,10 +1047,58 @@ export default function App() {
     }
   };
 
+  // Helper to load sample PDFs directly into memory
+  const handleLoadSamplePdf = async (type: 'ELECTRICITY' | 'WATER') => {
+    try {
+      setIsScanning(true);
+      const samplePath = type === 'ELECTRICITY'
+        ? '/assets/aistudio/factura_24_sep_-_24_oct_0000061093604335_78f75ad9.pdf'
+        : '/assets/aistudio/facturas_b33a4307.pdf';
+      const sampleName = type === 'ELECTRICITY'
+        ? 'Factura_Repsol_Luz_Oficial.pdf'
+        : 'Factura_EMUASA_Agua_Oficial.pdf';
+
+      const response = await fetch(samplePath);
+      const blob = await response.blob();
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const result = reader.result as string;
+        const base64 = result.includes(',') ? result.split(',')[1] : result;
+        setUploadedPdfBase64(base64);
+        setUploadedPdfInfo({
+          name: sampleName,
+          size: blob.size,
+          type: 'application/pdf'
+        });
+        setIsScanning(false);
+      };
+      reader.readAsDataURL(blob);
+    } catch (err) {
+      console.warn('Error loading sample pdf:', err);
+      setIsScanning(false);
+    }
+  };
+
+  const handleFileSelect = (file: File) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const base64 = result.includes(',') ? result.split(',')[1] : result;
+      setUploadedPdfBase64(base64);
+      setUploadedPdfInfo({
+        name: file.name,
+        size: file.size,
+        type: file.type || (file.name.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg')
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
   // AI OCR Bill Parsing with Deep Energy & Municipal Water Audit
   const handleScanBill = async (type: 'WATER' | 'ELECTRICITY') => {
-    if (!rawAiInput && !aiImageBase64) {
-      alert('Por favor, selecciona una factura de ejemplo, pega el texto de la factura o sube una imagen.');
+    if (!rawAiInput && !uploadedPdfBase64) {
+      alert('Por favor, selecciona o arrastra el archivo PDF de la factura, o pulsa en una de las facturas de muestra.');
       return;
     }
 
@@ -1060,13 +1110,14 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: rawAiInput,
-          image: aiImageBase64,
-          mimeType: 'image/jpeg'
+          fileBase64: uploadedPdfBase64,
+          mimeType: uploadedPdfInfo?.type || 'application/pdf',
+          fileName: uploadedPdfInfo?.name || (type === 'WATER' ? 'factura_agua.pdf' : 'factura_luz.pdf')
         })
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Error al procesar con IA');
+      if (!res.ok) throw new Error(data.error || 'Error al procesar la factura con IA');
 
       if (type === 'WATER') {
         const splitPct = supplyRules.water / 100;
@@ -1216,7 +1267,8 @@ export default function App() {
 
       setAiModalType(null);
       setRawAiInput('');
-      setAiImageBase64(null);
+      setUploadedPdfBase64(null);
+      setUploadedPdfInfo(null);
     } catch (err: any) {
       alert('Error en IA: ' + err.message);
     } finally {
@@ -2414,7 +2466,7 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/10 text-xs font-medium">
-                        {electricityExpenses.map((e) => {
+                        {[...electricityExpenses].sort((a, b) => (b.periodStartDate || b.chargeDate || b.id).localeCompare(a.periodStartDate || a.chargeDate || a.id)).map((e) => {
                           const isPaid = e.status === 'PAID';
                           const hasAlert = e.alarm?.hasAlarm || (e.extraServicesCost && e.extraServicesCost > 0);
 
@@ -2626,7 +2678,7 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/10 text-xs font-medium">
-                        {waterExpenses.map((w) => {
+                        {[...waterExpenses].sort((a, b) => (b.periodStartDate || b.chargeDate || b.id).localeCompare(a.periodStartDate || a.chargeDate || a.id)).map((w) => {
                           const isPaid = w.status === 'PAID';
                           const waste = w.breakdown?.wasteCollection || 28.35;
                           const canon = w.breakdown?.sanitationCanon || 11.10;
@@ -4615,7 +4667,8 @@ export default function App() {
               onClick={() => {
                 setAiModalType(null);
                 setRawAiInput('');
-                setAiImageBase64(null);
+                setUploadedPdfBase64(null);
+                setUploadedPdfInfo(null);
               }}
               className="absolute top-5 right-5 p-2 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors"
             >
@@ -4636,108 +4689,170 @@ export default function App() {
               </div>
             </div>
 
-            <div className="space-y-4">
-              {/* Quick Sample Loaders */}
-              <div className="bg-slate-950/80 p-3 rounded-2xl border border-white/10 space-y-2">
-                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
-                  ⚡ Carga Rápida de Factura Real Subida:
-                </span>
+            <div className="space-y-5">
+              {/* Quick Sample Loaders with Direct Real PDF Bytes */}
+              <div className="bg-slate-950/80 p-4 rounded-2xl border border-white/10 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-black text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" /> Carga Rápida de Factura Real PDF Oficial:
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-mono">1 clic para probar</span>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {aiModalType === 'ELECTRICITY' ? (
                     <button
                       type="button"
-                      onClick={() => {
-                        setRawAiInput(`REPSOL COMERCIALIZADORA DE ELECTRICIDAD Y GAS, S.L.
-Factura Nº: 61093604335 | Contrato: 4301983815
-CUPS: ES0021000013023167NN1F
-Periodo de facturación: 24/09/2026 - 24/10/2026 (30 días)
-Fecha de cargo bancario: 29.10.2026
-Potencia contratada: 6,900 kW (Importe potencia fija: 33,92 €)
-Energía consumida: 415,27 kWh x 0,101150 €/kWh = 42,01 €
-Desglose tramos horarios: Punta 96,23 kWh | Llano 96,80 kWh | Valle 222,25 kWh
-Servicios adicionales: Tu Asistente 24h: 4,06 €
-Alquiler equipos de medida: 0,75 € | Financiación Bono Social: 0,74 €
-Impuesto sobre electricidad e IVA: 21,85 €
-TOTAL FACTURA: 103,33 €`);
-                      }}
-                      className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-bold transition-all text-left flex items-center gap-1.5"
+                      disabled={isScanning}
+                      onClick={() => handleLoadSamplePdf('ELECTRICITY')}
+                      className="px-3.5 py-2 bg-gradient-to-r from-amber-500/20 to-orange-500/20 hover:from-amber-500/30 hover:to-orange-500/30 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-bold transition-all text-left flex items-center gap-2 shadow-sm"
                     >
-                      <Zap className="w-3.5 h-3.5" /> Factura Real Repsol (PDF: 0,10115 €/kWh + Asistente 24h)
+                      <Zap className="w-4 h-4 text-amber-400 shrink-0" />
+                      <div>
+                        <span className="block font-black text-white">Factura Real Repsol PDF (103,33 €)</span>
+                        <span className="text-[10px] text-amber-300/80 font-normal">415 kWh • 0,10115 €/kWh • Tu Asistente 24h</span>
+                      </div>
                     </button>
                   ) : (
                     <button
                       type="button"
-                      onClick={() => {
-                        setRawAiInput(`EMUASA AGUAS DE MURCIA, S.A.
-Factura Nº: 06102026A100849994 | Póliza/Contrato: 6577933
-Periodo facturado: 10/07/2026 - 08/09/2026 (60 días)
-Fecha de cobro: 09.09.2026
-Contador: 15mm (D15TA174976G)
-Consumo bimestral: 17 m³
-Cuota fija de servicio de agua: 13,80 €
-Consumo agua (Tramo 1 y 2): 15,90 €
-Conservación de contador: 0,67 €
-Alcantarillado cuota y consumo: 8,58 €
-Tasa de Basura (Ayuntamiento de Murcia): 28,35 €
-Canon de Saneamiento (ESAMUR Comunidad Autónoma): 11,10 € (Fijo 6,00€ + Variable 5,10€)
-IVA: 4,08 €
-TOTAL FACTURA: 83,57 € (Coste: 1,393 €/día)`);
-                      }}
-                      className="px-3 py-1.5 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 rounded-xl text-xs font-bold transition-all text-left flex items-center gap-1.5"
+                      disabled={isScanning}
+                      onClick={() => handleLoadSamplePdf('WATER')}
+                      className="px-3.5 py-2 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 hover:from-cyan-500/30 hover:to-blue-500/30 text-cyan-300 border border-cyan-500/40 rounded-xl text-xs font-bold transition-all text-left flex items-center gap-2 shadow-sm"
                     >
-                      <Droplet className="w-3.5 h-3.5" /> Factura Real EMUASA (PDF: 17 m³ + Basura 28,35€)
+                      <Droplet className="w-4 h-4 text-cyan-400 shrink-0" />
+                      <div>
+                        <span className="block font-black text-white">Factura Real EMUASA PDF (83,57 €)</span>
+                        <span className="text-[10px] text-cyan-300/80 font-normal">17 m³ • Basura 28,35€ • Canon 11,10€</span>
+                      </div>
                     </button>
                   )}
                 </div>
               </div>
 
-              <div>
-                <label className="text-xs text-slate-300 font-bold block mb-1">
-                  1. Pegar texto de la factura o desglose OCR:
+              {/* PDF & File Drag & Drop Zone */}
+              <div className="space-y-2">
+                <label className="text-xs text-slate-200 font-bold flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-cyan-400" />
+                    Subir Factura en formato PDF (o imagen / foto):
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-normal">PDF oficial, JPG, PNG</span>
                 </label>
-                <textarea
-                  rows={5}
-                  placeholder="Pega aquí el texto copiado de la factura en PDF o imagen..."
-                  value={rawAiInput}
-                  onChange={(e) => setRawAiInput(e.target.value)}
-                  className="w-full bg-slate-950 border border-white/15 rounded-2xl p-3.5 text-xs text-white focus:outline-none focus:border-cyan-500 font-mono"
-                />
+
+                {uploadedPdfInfo ? (
+                  /* Loaded File Card */
+                  <div className="p-4 rounded-2xl bg-slate-950 border border-emerald-500/50 flex items-center justify-between shadow-lg">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-red-500/20 border border-red-500/40 flex items-center justify-center text-red-400 font-black text-xs shrink-0 font-mono">
+                        PDF
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-white truncate max-w-xs md:max-w-md">
+                          {uploadedPdfInfo.name}
+                        </div>
+                        <div className="text-[11px] text-slate-400 flex items-center gap-2 mt-0.5">
+                          <span>{(uploadedPdfInfo.size / 1024).toFixed(1)} KB</span>
+                          <span>•</span>
+                          <span className="text-emerald-400 font-bold flex items-center gap-1">
+                            <CheckCircle className="w-3 h-3" /> Archivo PDF listo para procesar
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUploadedPdfBase64(null);
+                        setUploadedPdfInfo(null);
+                      }}
+                      className="p-2 text-slate-400 hover:text-red-400 hover:bg-white/5 rounded-xl transition-colors shrink-0 ml-2"
+                      title="Quitar archivo"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  /* Dropzone */
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setIsDraggingPdf(true);
+                    }}
+                    onDragLeave={() => setIsDraggingPdf(false)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setIsDraggingPdf(false);
+                      const file = e.dataTransfer.files?.[0];
+                      if (file) handleFileSelect(file);
+                    }}
+                    className={`relative border-2 border-dashed rounded-2xl p-6 text-center transition-all cursor-pointer ${
+                      isDraggingPdf
+                        ? 'border-cyan-400 bg-cyan-950/40 shadow-lg shadow-cyan-500/20'
+                        : 'border-white/20 bg-slate-950/60 hover:border-cyan-500/50 hover:bg-slate-950/90'
+                    }`}
+                  >
+                    <input
+                      type="file"
+                      accept=".pdf,application/pdf,image/png,image/jpeg,image/webp"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleFileSelect(file);
+                      }}
+                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                    />
+                    <div className="flex flex-col items-center justify-center space-y-2 pointer-events-none">
+                      <div className="w-12 h-12 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                        <Upload className="w-6 h-6" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold text-white">
+                          Arrastra aquí tu factura en <span className="text-cyan-400 font-black">PDF</span> o pulsa para examinar
+                        </p>
+                        <p className="text-[11px] text-slate-400 mt-1">
+                          Compatible con Repsol, Iberdrola, Endesa, EMUASA, Canal Isabel II, Agbar
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <div>
-                <label className="text-xs text-slate-300 font-bold block mb-1">
-                  2. O subir imagen de la factura (JPG / PNG):
-                </label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) {
-                      const reader = new FileReader();
-                      reader.onload = () => {
-                        const base64String = (reader.result as string).split(',')[1];
-                        setAiImageBase64(base64String);
-                      };
-                      reader.readAsDataURL(file);
-                    }
-                  }}
-                  className="w-full text-xs text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-black file:bg-cyan-600 file:text-slate-950 hover:file:bg-cyan-500 cursor-pointer"
-                />
+              {/* Optional Manual OCR Textarea */}
+              <div className="space-y-1">
+                <details className="text-xs text-slate-400 group">
+                  <summary className="cursor-pointer font-bold hover:text-white transition-colors py-1 flex items-center gap-1.5 select-none">
+                    <ChevronRight className="w-3.5 h-3.5 transition-transform group-open:rotate-90 text-cyan-400" />
+                    <span>Pegar texto o desglose manual (opcional si ya subiste el PDF)</span>
+                  </summary>
+                  <div className="mt-2">
+                    <textarea
+                      rows={4}
+                      placeholder="Si no tienes el archivo PDF, puedes pegar aquí el texto de la factura..."
+                      value={rawAiInput}
+                      onChange={(e) => setRawAiInput(e.target.value)}
+                      className="w-full bg-slate-950 border border-white/15 rounded-2xl p-3 text-xs text-white focus:outline-none focus:border-cyan-500 font-mono"
+                    />
+                  </div>
+                </details>
               </div>
 
+              {/* Action Button */}
               <button
-                disabled={isScanning}
+                type="button"
+                disabled={isScanning || (!uploadedPdfBase64 && !rawAiInput.trim())}
                 onClick={() => handleScanBill(aiModalType)}
-                className="w-full py-3.5 bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 text-slate-950 font-black text-xs rounded-2xl shadow-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                className="w-full py-3.5 bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-slate-950 font-black text-sm rounded-2xl shadow-xl transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {isScanning ? (
                   <>
-                    <RefreshCw className="w-4 h-4 animate-spin" /> Auditando y extrayendo conceptos con Gemini...
+                    <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
+                    <span>Procesando PDF y Extrayendo Conceptos...</span>
                   </>
                 ) : (
                   <>
-                    <Sparkles className="w-4 h-4" /> Procesar y Generar Auditoría Inteligente
+                    <Sparkles className="w-4 h-4 text-slate-950" />
+                    <span>PROCESAR FACTURA EN PDF Y AUDITAR TARIFA</span>
                   </>
                 )}
               </button>
