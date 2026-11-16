@@ -684,6 +684,22 @@ export default function App() {
   const [selectedReceiptForModal, setSelectedReceiptForModal] = useState<ReceiptItem | null>(null);
   const [copySuccessToast, setCopySuccessToast] = useState(false);
 
+  // Close any open modal with Escape key
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (selectedReceiptForModal) setSelectedReceiptForModal(null);
+      else if (aiModalType) {
+        setAiModalType(null);
+        setScanModalFeedback(null);
+      } else if (auditedBillPreview) setAuditedBillPreview(null);
+      else if (viewingAuditExpense) setViewingAuditExpense(null);
+      else if (isAddHistoricalModalOpen) setIsAddHistoricalModalOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedReceiptForModal, aiModalType, auditedBillPreview, viewingAuditExpense, isAddHistoricalModalOpen]);
+
   // --- Dynamic Receipt Builder State (Prompt 9 Requirements) ---
   const todayStr = new Date().toISOString().split('T')[0];
   const [draftIssueDate, setDraftIssueDate] = useState<string>(todayStr);
@@ -4877,132 +4893,160 @@ export default function App() {
 
       {/* MODAL: VER DETALLE DEL RECIBO E IMPRIMIR PROFESIONAL */}
       {selectedReceiptForModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-slate-900 border border-white/20 rounded-3xl max-w-2xl w-full p-6 lg:p-8 space-y-6 shadow-2xl relative my-8">
-            <button
-              onClick={() => setSelectedReceiptForModal(null)}
-              className="absolute top-5 right-5 p-2 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            {/* Printable Receipt Paper View */}
-            <div id="printable-receipt" className="space-y-6 bg-slate-950 p-6 rounded-2xl border border-white/10 text-slate-100">
-              <div className="flex justify-between items-start border-b border-white/15 pb-4">
-                <div>
-                  <h3 className="text-xl font-black text-white">{selectedReceiptForModal.title}</h3>
-                  <p className="text-xs text-cyan-400 font-mono mt-0.5">Nº: {selectedReceiptForModal.receiptNumber}</p>
-                  <p className="text-xs text-slate-400 mt-1">Fecha de emisión: {selectedReceiptForModal.issueDate}</p>
-                </div>
-                <div className="text-right">
-                  <span className={`px-3 py-1 rounded-full text-xs font-black uppercase ${
-                    selectedReceiptForModal.status === 'PAID' ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40' : 'bg-amber-950 text-amber-300 border border-amber-500/40'
-                  }`}>
-                    {selectedReceiptForModal.status === 'PAID' ? 'COBRADO' : 'PENDIENTE'}
-                  </span>
-                  {selectedReceiptForModal.paidDate && (
-                    <p className="text-[11px] text-slate-400 mt-1">Cobrado el: {selectedReceiptForModal.paidDate}</p>
-                  )}
-                </div>
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSelectedReceiptForModal(null);
+          }}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4"
+        >
+          <div className="bg-slate-900 border border-white/20 rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+            {/* Pinned Top Bar (Always visible, never scrolls out of screen) */}
+            <div className="shrink-0 flex items-center justify-between gap-3 px-6 py-4 border-b border-white/10 bg-slate-900">
+              <div className="min-w-0">
+                <h3 className="text-base sm:text-lg font-black text-white truncate">{selectedReceiptForModal.title}</h3>
+                <p className="text-[11px] text-cyan-400 font-mono">
+                  Nº: {selectedReceiptForModal.receiptNumber} • {selectedReceiptForModal.issueDate}
+                </p>
               </div>
-
-              {/* Inquilino info */}
-              <div className="grid grid-cols-2 gap-4 text-xs bg-slate-900/60 p-4 rounded-xl border border-white/10">
-                <div>
-                  <span className="text-slate-400 font-bold block uppercase text-[10px]">Inquilino</span>
-                  <span className="text-white font-bold">{tenant.name}</span>
-                  <span className="block text-slate-400 font-mono">DNI: {tenant.dni}</span>
-                </div>
-                <div>
-                  <span className="text-slate-400 font-bold block uppercase text-[10px]">Contacto</span>
-                  <span className="text-white font-mono">{tenant.phone}</span>
-                </div>
-              </div>
-
-              {/* Itemized Table */}
-              <div className="space-y-2">
-                <span className="text-xs font-bold text-slate-300 uppercase tracking-wider block">Desglose de Conceptos</span>
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-white/15 text-slate-400 uppercase text-[10px]">
-                      <th className="py-2">Concepto</th>
-                      <th className="py-2 text-right">Importe</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/10">
-                    {selectedReceiptForModal.items.map((it, idx) => (
-                      <tr key={idx}>
-                        <td className="py-2.5 text-slate-200">
-                          <span className="font-bold block text-white">{it.description}</span>
-                          {it.detail && <span className="text-[10px] text-slate-400">{it.detail}</span>}
-                        </td>
-                        <td className="py-2.5 text-right font-mono font-bold text-white">{it.amount.toFixed(2)} €</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Balances & Totals */}
-              <div className="border-t border-white/15 pt-3 space-y-2 text-xs">
-                <div className="flex justify-between text-slate-400">
-                  <span>Subtotal conceptos:</span>
-                  <span className="font-mono font-bold text-white">{selectedReceiptForModal.subtotalItems.toFixed(2)} €</span>
-                </div>
-                {selectedReceiptForModal.previousBalance !== 0 && (
-                  <div className="flex justify-between text-cyan-300">
-                    <span>Ajuste saldo liquidación anterior:</span>
-                    <span className="font-mono font-bold">
-                      {selectedReceiptForModal.previousBalance > 0 ? `+${selectedReceiptForModal.previousBalance.toFixed(2)}` : selectedReceiptForModal.previousBalance.toFixed(2)} €
-                    </span>
-                  </div>
-                )}
-                <div className="flex justify-between text-base font-black text-white pt-2 border-t border-white/15">
-                  <span>TOTAL LIQUIDACIÓN:</span>
-                  <span className="font-mono text-cyan-400 text-lg">{selectedReceiptForModal.totalAmount.toFixed(2)} €</span>
-                </div>
-
-                {selectedReceiptForModal.status === 'PAID' && (
-                  <>
-                    <div className="flex justify-between text-xs text-emerald-400 font-bold">
-                      <span>Importe abonado por inquilino:</span>
-                      <span className="font-mono">{selectedReceiptForModal.amountPaid.toFixed(2)} €</span>
-                    </div>
-                    {selectedReceiptForModal.remainingBalance !== 0 && (
-                      <div className="flex justify-between text-xs text-amber-300 font-bold">
-                        <span>Saldo remanente próximo recibo:</span>
-                        <span className="font-mono">
-                          {selectedReceiptForModal.remainingBalance > 0 ? `+${selectedReceiptForModal.remainingBalance.toFixed(2)} € (deuda)` : `${selectedReceiptForModal.remainingBalance.toFixed(2)} € (a favor)`}
-                        </span>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-
-              {/* Explanatory Note */}
-              {selectedReceiptForModal.explanationNote && (
-                <div className="p-3 bg-slate-900/90 rounded-xl border border-white/10 text-[11px] text-slate-300 font-mono whitespace-pre-wrap">
-                  {selectedReceiptForModal.explanationNote}
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={() => setSelectedReceiptForModal(null)}
+                className="shrink-0 px-3 py-1.5 rounded-xl bg-white/10 text-slate-200 hover:text-white hover:bg-white/20 transition-colors flex items-center gap-1.5 text-xs font-bold"
+              >
+                <X className="w-4 h-4" /> Cerrar
+              </button>
             </div>
 
-            {/* Modal Actions */}
-            <div className="flex items-center justify-between gap-4 pt-2">
+            {/* Scrollable Printable Receipt Paper View */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+              <div id="printable-receipt" className="space-y-5 bg-slate-950 p-5 sm:p-6 rounded-2xl border border-white/10 text-slate-100">
+                <div className="flex justify-between items-start border-b border-white/15 pb-4">
+                  <div>
+                    <h4 className="text-lg font-black text-white">{selectedReceiptForModal.title}</h4>
+                    <p className="text-xs text-cyan-400 font-mono mt-0.5">Nº: {selectedReceiptForModal.receiptNumber}</p>
+                    <p className="text-xs text-slate-400 mt-1">Fecha de emisión: {selectedReceiptForModal.issueDate}</p>
+                  </div>
+                  <div className="text-right">
+                    <span className={`px-3 py-1 rounded-full text-xs font-black uppercase ${
+                      selectedReceiptForModal.status === 'PAID' ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40' : 'bg-amber-950 text-amber-300 border border-amber-500/40'
+                    }`}>
+                      {selectedReceiptForModal.status === 'PAID' ? 'COBRADO' : 'PENDIENTE'}
+                    </span>
+                    {selectedReceiptForModal.paidDate && (
+                      <p className="text-[11px] text-slate-400 mt-1">Cobrado el: {selectedReceiptForModal.paidDate}</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Inquilino info */}
+                <div className="grid grid-cols-2 gap-4 text-xs bg-slate-900/60 p-4 rounded-xl border border-white/10">
+                  <div>
+                    <span className="text-slate-400 font-bold block uppercase text-[10px]">Inquilino</span>
+                    <span className="text-white font-bold">{tenant.name}</span>
+                    <span className="block text-slate-400 font-mono">DNI: {tenant.dni}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 font-bold block uppercase text-[10px]">Contacto</span>
+                    <span className="text-white font-mono">{tenant.phone}</span>
+                  </div>
+                </div>
+
+                {/* Itemized Table */}
+                <div className="space-y-2">
+                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider block">Desglose de Conceptos</span>
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-white/15 text-slate-400 uppercase text-[10px]">
+                        <th className="py-2">Concepto</th>
+                        <th className="py-2 text-right">Importe</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/10">
+                      {selectedReceiptForModal.items.map((it, idx) => (
+                        <tr key={idx}>
+                          <td className="py-2.5 text-slate-200">
+                            <span className="font-bold block text-white">{it.description}</span>
+                            {it.detail && <span className="text-[10px] text-slate-400">{it.detail}</span>}
+                          </td>
+                          <td className="py-2.5 text-right font-mono font-bold text-white">{it.amount.toFixed(2)} €</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Balances & Totals */}
+                <div className="border-t border-white/15 pt-3 space-y-2 text-xs">
+                  <div className="flex justify-between text-slate-400">
+                    <span>Subtotal conceptos:</span>
+                    <span className="font-mono font-bold text-white">{selectedReceiptForModal.subtotalItems.toFixed(2)} €</span>
+                  </div>
+                  {selectedReceiptForModal.previousBalance !== 0 && (
+                    <div className="flex justify-between text-cyan-300">
+                      <span>Ajuste saldo liquidación anterior:</span>
+                      <span className="font-mono font-bold">
+                        {selectedReceiptForModal.previousBalance > 0 ? `+${selectedReceiptForModal.previousBalance.toFixed(2)}` : selectedReceiptForModal.previousBalance.toFixed(2)} €
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-base font-black text-white pt-2 border-t border-white/15">
+                    <span>TOTAL LIQUIDACIÓN:</span>
+                    <span className="font-mono text-cyan-400 text-lg">{selectedReceiptForModal.totalAmount.toFixed(2)} €</span>
+                  </div>
+
+                  {selectedReceiptForModal.status === 'PAID' && (
+                    <>
+                      <div className="flex justify-between text-xs text-emerald-400 font-bold">
+                        <span>Importe abonado por inquilino:</span>
+                        <span className="font-mono">{selectedReceiptForModal.amountPaid.toFixed(2)} €</span>
+                      </div>
+                      {selectedReceiptForModal.remainingBalance !== 0 && (
+                        <div className="flex justify-between text-xs text-amber-300 font-bold">
+                          <span>Saldo remanente próximo recibo:</span>
+                          <span className="font-mono">
+                            {selectedReceiptForModal.remainingBalance > 0 ? `+${selectedReceiptForModal.remainingBalance.toFixed(2)} € (deuda)` : `${selectedReceiptForModal.remainingBalance.toFixed(2)} € (a favor)`}
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* Explanatory Note */}
+                {selectedReceiptForModal.explanationNote && (
+                  <div className="p-3 bg-slate-900/90 rounded-xl border border-white/10 text-[11px] text-slate-300 font-mono whitespace-pre-wrap">
+                    {selectedReceiptForModal.explanationNote}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Pinned Bottom Bar */}
+            <div className="shrink-0 flex flex-wrap items-center justify-between gap-2.5 px-6 py-4 border-t border-white/10 bg-slate-900">
               <button
+                type="button"
                 onClick={() => copyToClipboard(selectedReceiptForModal.explanationNote)}
                 className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs rounded-xl shadow flex items-center gap-2"
               >
                 <Send className="w-4 h-4" /> Copiar para WhatsApp
               </button>
 
-              <button
-                onClick={() => window.print()}
-                className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl border border-white/15 flex items-center gap-2"
-              >
-                <Printer className="w-4 h-4" /> Imprimir Recibo
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl border border-white/15 flex items-center gap-2"
+                >
+                  <Printer className="w-4 h-4" /> Imprimir
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedReceiptForModal(null)}
+                  className="px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl transition-colors"
+                >
+                  Cerrar
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -5010,20 +5054,38 @@ export default function App() {
 
       {/* MODAL: SUBIR Y AUDITAR FACTURA EN PDF (AGUA / LUZ) */}
       {aiModalType && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-slate-900 border border-white/20 rounded-3xl max-w-xl w-full p-6 lg:p-8 space-y-5 shadow-2xl relative my-8">
-            <button
-              onClick={() => {
-                setAiModalType(null);
-                setRawAiInput('');
-                setUploadedPdfBase64(null);
-                setUploadedPdfInfo(null);
-                setScanModalFeedback(null);
-              }}
-              className="absolute top-5 right-5 p-2 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setAiModalType(null);
+              setRawAiInput('');
+              setUploadedPdfBase64(null);
+              setUploadedPdfInfo(null);
+              setScanModalFeedback(null);
+            }
+          }}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4"
+        >
+          <div className="bg-slate-900 border border-white/20 rounded-3xl max-w-xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+            <div className="shrink-0 flex items-center justify-between gap-3 px-6 py-4 border-b border-white/10 bg-slate-900">
+              <span className="text-xs font-black uppercase tracking-wider text-slate-300">
+                Subir Factura PDF • {aiModalType === 'WATER' ? 'Agua' : 'Luz'}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setAiModalType(null);
+                  setRawAiInput('');
+                  setUploadedPdfBase64(null);
+                  setUploadedPdfInfo(null);
+                  setScanModalFeedback(null);
+                }}
+                className="px-3 py-1.5 rounded-xl bg-white/10 text-slate-200 hover:text-white hover:bg-white/20 transition-colors flex items-center gap-1.5 text-xs font-bold"
+              >
+                <X className="w-4 h-4" /> Cerrar
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-5">
 
             <div className="flex items-center gap-3">
               <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg ${
@@ -5280,25 +5342,34 @@ export default function App() {
                 </div>
               </details>
             </div>
+            </div>
           </div>
         </div>
       )}
 
       {/* MODAL 1: RESULTADO DE REVISIÓN Y GUARDADO EN BASE DE DATOS */}
       {auditedBillPreview && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-emerald-500/40 rounded-3xl max-w-2xl w-full p-6 lg:p-8 space-y-5 shadow-2xl relative animate-scaleUp max-h-[90vh] overflow-y-auto">
-            <button
-              onClick={() => setAuditedBillPreview(null)}
-              className="absolute top-5 right-5 p-2 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            {/* Saved confirmation badge */}
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[11px] font-black">
-              <CheckCircle className="w-3.5 h-3.5" /> REVISADA Y ADJUNTADA A LA BASE DE DATOS (SIN DATOS INVENTADOS)
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setAuditedBillPreview(null);
+          }}
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-4"
+        >
+          <div className="bg-slate-900 border border-emerald-500/40 rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl relative animate-scaleUp">
+            <div className="shrink-0 flex items-center justify-between gap-3 px-6 py-4 border-b border-white/10 bg-slate-900">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[11px] font-black">
+                <CheckCircle className="w-3.5 h-3.5" /> REVISADA Y ADJUNTADA A LA BASE DE DATOS
+              </div>
+              <button
+                type="button"
+                onClick={() => setAuditedBillPreview(null)}
+                className="px-3 py-1.5 rounded-xl bg-white/10 text-slate-200 hover:text-white hover:bg-white/20 transition-colors flex items-center gap-1.5 text-xs font-bold"
+              >
+                <X className="w-4 h-4" /> Cerrar
+              </button>
             </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-5">
 
             {/* Header */}
             <div className="flex items-center gap-3 border-b border-white/10 pb-4">
@@ -5461,6 +5532,7 @@ export default function App() {
               >
                 <Plus className="w-4 h-4" /> Añadir a Recibo
               </button>
+              </div>
             </div>
           </div>
         </div>
@@ -5468,14 +5540,26 @@ export default function App() {
 
       {/* MODAL 2: INSPECTOR TÉCNICO DE AUDITORÍA DETALLADA */}
       {viewingAuditExpense && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-white/20 rounded-3xl max-w-2xl w-full p-6 lg:p-8 space-y-6 shadow-2xl relative animate-scaleUp max-h-[90vh] overflow-y-auto">
-            <button
-              onClick={() => setViewingAuditExpense(null)}
-              className="absolute top-5 right-5 p-2 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setViewingAuditExpense(null);
+          }}
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-4"
+        >
+          <div className="bg-slate-900 border border-white/20 rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl relative animate-scaleUp">
+            <div className="shrink-0 flex items-center justify-between gap-3 px-6 py-4 border-b border-white/10 bg-slate-900">
+              <span className="text-xs font-black uppercase tracking-wider text-slate-300">
+                Dossier Técnico • Fact: {viewingAuditExpense.invoiceNumber}
+              </span>
+              <button
+                type="button"
+                onClick={() => setViewingAuditExpense(null)}
+                className="px-3 py-1.5 rounded-xl bg-white/10 text-slate-200 hover:text-white hover:bg-white/20 transition-colors flex items-center gap-1.5 text-xs font-bold"
+              >
+                <X className="w-4 h-4" /> Cerrar
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-5">
 
             {/* Header */}
             <div className="flex items-center gap-3 border-b border-white/10 pb-4">
@@ -5646,20 +5730,33 @@ export default function App() {
                 Cerrar Dossier
               </button>
             </div>
+            </div>
           </div>
         </div>
       )}
 
       {/* MODAL: CARGAR MES EN HISTORIAL (AÑOS ANTERIORES) */}
       {isAddHistoricalModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-white/20 rounded-3xl max-w-lg w-full p-6 lg:p-8 space-y-6 shadow-2xl relative">
-            <button
-              onClick={() => setIsAddHistoricalModalOpen(false)}
-              className="absolute top-5 right-5 p-2 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsAddHistoricalModalOpen(false);
+          }}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4"
+        >
+          <div className="bg-slate-900 border border-white/20 rounded-3xl max-w-lg w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl relative">
+            <div className="shrink-0 flex items-center justify-between gap-3 px-6 py-4 border-b border-white/10 bg-slate-900">
+              <span className="text-xs font-black uppercase tracking-wider text-emerald-300">
+                + Cargar Mes en Historial
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsAddHistoricalModalOpen(false)}
+                className="px-3 py-1.5 rounded-xl bg-white/10 text-slate-200 hover:text-white hover:bg-white/20 transition-colors flex items-center gap-1.5 text-xs font-bold"
+              >
+                <X className="w-4 h-4" /> Cerrar
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-5">
 
             <div className="flex items-center gap-3">
               <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-500 flex items-center justify-center text-slate-950 font-black shadow-lg">
@@ -5807,6 +5904,7 @@ export default function App() {
                 </button>
               </div>
             </form>
+            </div>
           </div>
         </div>
       )}
