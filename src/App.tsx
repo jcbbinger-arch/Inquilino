@@ -652,6 +652,20 @@ export default function App() {
   const [uploadedPdfBase64, setUploadedPdfBase64] = useState<string | null>(null);
   const [uploadedPdfInfo, setUploadedPdfInfo] = useState<{ name: string; size: number; type: string } | null>(null);
   const [isDraggingPdf, setIsDraggingPdf] = useState(false);
+  const [scanModalFeedback, setScanModalFeedback] = useState<{
+    kind: 'duplicate' | 'error';
+    title: string;
+    message: string;
+    existingExpense?: WaterExpense | ElectricityExpense;
+  } | null>(null);
+
+  const openAiScanModal = (type: 'WATER' | 'ELECTRICITY') => {
+    setScanModalFeedback(null);
+    setRawAiInput('');
+    setUploadedPdfBase64(null);
+    setUploadedPdfInfo(null);
+    setAiModalType(type);
+  };
 
   // Dedicated Audit Inspector and Alert States
   const [auditedBillPreview, setAuditedBillPreview] = useState<{
@@ -1110,18 +1124,30 @@ export default function App() {
     }
   };
 
-  // Helper to load sample PDFs directly into memory
-  const handleLoadSamplePdf = async (type: 'ELECTRICITY' | 'WATER') => {
+  // Helper to load official PDFs directly into memory (supports both new reference bills and previously archived ones)
+  const handleLoadSamplePdf = async (type: 'ELECTRICITY' | 'WATER', variant: 'new' | 'archived' = 'new') => {
     try {
+      setScanModalFeedback(null);
       setIsScanning(true);
-      const samplePath = type === 'ELECTRICITY'
-        ? '/assets/aistudio/factura_24_sep_-_24_oct_0000061093604335_78f75ad9.pdf'
-        : '/assets/aistudio/facturas_b33a4307.pdf';
-      const sampleName = type === 'ELECTRICITY'
-        ? 'Factura_Repsol_Luz_Oficial.pdf'
-        : 'Factura_EMUASA_Agua_Oficial.pdf';
+      const samplePath =
+        type === 'ELECTRICITY'
+          ? variant === 'new'
+            ? '/assets/aistudio/Factura_8e6b1deb.pdf'
+            : '/assets/aistudio/factura_24_sep_-_24_oct_0000061093604335_78f75ad9.pdf'
+          : variant === 'new'
+            ? '/assets/aistudio/facturas__1__4a435069.pdf'
+            : '/assets/aistudio/facturas_b33a4307.pdf';
+      const sampleName =
+        type === 'ELECTRICITY'
+          ? variant === 'new'
+            ? 'Factura_Repsol_24Ago_24Sep_132_16.pdf'
+            : 'Factura_Repsol_24Sep_24Oct_103_33.pdf'
+          : variant === 'new'
+            ? 'Factura_EMUASA_2026_06_91_37.pdf'
+            : 'Factura_EMUASA_2026_05_83_57.pdf';
 
       const response = await fetch(samplePath);
+      if (!response.ok) throw new Error('No se pudo cargar el archivo PDF de prueba.');
       const blob = await response.blob();
       const reader = new FileReader();
       reader.onloadend = () => {
@@ -1131,19 +1157,25 @@ export default function App() {
         setUploadedPdfInfo({
           name: sampleName,
           size: blob.size,
-          type: 'application/pdf'
+          type: 'application/pdf',
         });
         setIsScanning(false);
       };
       reader.readAsDataURL(blob);
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Error loading sample pdf:', err);
+      setScanModalFeedback({
+        kind: 'error',
+        title: 'Error al cargar el PDF',
+        message: err?.message || 'No se pudo leer el archivo PDF seleccionado.',
+      });
       setIsScanning(false);
     }
   };
 
   const handleFileSelect = (file: File) => {
     if (!file) return;
+    setScanModalFeedback(null);
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
@@ -1152,19 +1184,55 @@ export default function App() {
       setUploadedPdfInfo({
         name: file.name,
         size: file.size,
-        type: file.type || (file.name.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg')
+        type: file.type || (file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg'),
       });
     };
     reader.readAsDataURL(file);
   };
 
-  // AI OCR Bill Parsing with Deep Energy & Municipal Water Audit
+  // Strict Duplicate Detector: compares normalized invoiceNumber OR exact billing period + full total
+  const findDuplicateInvoice = <T extends { invoiceNumber?: string; periodStartDate?: string; periodEndDate?: string; periodRange?: string; fullInvoiceTotal?: number; totalAmount: number }>(
+    list: T[],
+    incomingInv: string | undefined,
+    incomingPeriodRange: string | undefined,
+    incomingStart: string | undefined,
+    incomingEnd: string | undefined,
+    incomingTotal: number
+  ): T | undefined => {
+    const norm = (s?: string) => (s || '').trim().toUpperCase();
+    const invA = norm(incomingInv);
+
+    return list.find((item) => {
+      const invB = norm(item.invoiceNumber);
+      if (invA && invB && invA !== 'S/N' && invB !== 'S/N' && invA === invB) {
+        return true;
+      }
+      const existingFull = item.fullInvoiceTotal ?? item.totalAmount;
+      const sameTotal = incomingTotal > 0 && Math.abs(existingFull - incomingTotal) < 0.05;
+      if (!sameTotal) return false;
+
+      if (incomingStart && incomingEnd && item.periodStartDate === incomingStart && item.periodEndDate === incomingEnd) {
+        return true;
+      }
+      if (incomingPeriodRange && item.periodRange && item.periodRange.trim() === incomingPeriodRange.trim()) {
+        return true;
+      }
+      return false;
+    });
+  };
+
+  // AI OCR & Strict PDF Parser with Duplicate Detection + Zero Invented Data
   const handleScanBill = async (type: 'WATER' | 'ELECTRICITY') => {
-    if (!rawAiInput && !uploadedPdfBase64) {
-      alert('Por favor, selecciona o arrastra el archivo PDF de la factura, o pulsa en una de las facturas de muestra.');
+    if (!rawAiInput.trim() && !uploadedPdfBase64) {
+      setScanModalFeedback({
+        kind: 'error',
+        title: 'Falta el archivo PDF',
+        message: 'Por favor, arrastra o selecciona el PDF de la factura antes de procesarla.',
+      });
       return;
     }
 
+    setScanModalFeedback(null);
     setIsScanning(true);
     try {
       const endpoint = type === 'WATER' ? '/api/ai/parse-water' : '/api/ai/parse-electricity';
@@ -1175,83 +1243,164 @@ export default function App() {
           text: rawAiInput,
           fileBase64: uploadedPdfBase64,
           mimeType: uploadedPdfInfo?.type || 'application/pdf',
-          fileName: uploadedPdfInfo?.name || (type === 'WATER' ? 'factura_agua.pdf' : 'factura_luz.pdf')
-        })
+          fileName: uploadedPdfInfo?.name || (type === 'WATER' ? 'factura_agua.pdf' : 'factura_luz.pdf'),
+        }),
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Error al procesar la factura con IA');
+      if (!res.ok) throw new Error(data.error || 'No se pudo procesar la factura.');
+
+      const total = Number(data.totalAmount) || 0;
+      if (total <= 0) {
+        throw new Error('No se detectó un importe total válido en el PDF. No se inventan datos.');
+      }
 
       if (type === 'WATER') {
+        // 1. Check for duplicates BEFORE modifying database
+        const duplicateWater = findDuplicateInvoice(
+          waterExpenses,
+          data.invoiceNumber,
+          data.periodRange,
+          data.periodStartDate,
+          data.periodEndDate,
+          total
+        );
+        if (duplicateWater) {
+          const statusLabel = duplicateWater.status === 'PAID' ? 'COBRADA / LIQUIDADA' : 'PENDIENTE DE COBRO';
+          setScanModalFeedback({
+            kind: 'duplicate',
+            title: 'Esta factura de agua ya estaba cargada anteriormente',
+            message: `Nº Factura: ${duplicateWater.invoiceNumber} • Periodo: ${duplicateWater.periodRange || duplicateWater.chargeDate} • Total: ${(duplicateWater.fullInvoiceTotal ?? duplicateWater.totalAmount).toFixed(2)} € • Estado: ${statusLabel}. No se ha duplicado en la base de datos.`,
+            existingExpense: duplicateWater,
+          });
+          setIsScanning(false);
+          return;
+        }
+
         const splitPct = supplyRules.water / 100;
-        const total = Number(data.totalAmount) || 0;
         const tenantShare = Math.round(total * splitPct * 100) / 100;
-        const wasteTax = data.breakdown?.wasteCollection || data.municipalTaxes?.wasteTax || 0;
-        const canon = data.breakdown?.sanitationCanon || ((data.municipalTaxes?.sanitationFixed || 0) + (data.municipalTaxes?.sanitationVariable || 0)) || 0;
+        const wasteTax = Number(data.breakdown?.wasteCollection ?? data.municipalTaxes?.wasteTax) || 0;
+        const canon =
+          Number(
+            data.breakdown?.sanitationCanon ??
+              ((Number(data.municipalTaxes?.sanitationFixed) || 0) + (Number(data.municipalTaxes?.sanitationVariable) || 0))
+          ) || 0;
+        const billingDays = Number(data.billingDays) || 0;
+        const m3Consumed = Number(data.m3Consumed) || 0;
+        const unitPrice = Number(data.unitPrice) || (m3Consumed > 0 ? Number((total / m3Consumed).toFixed(3)) : 0);
 
         const alerts: string[] = [];
         if (data.alarm?.alerts && Array.isArray(data.alarm.alerts)) {
           alerts.push(...data.alarm.alerts);
         }
-        if (total > 0 && (wasteTax + canon) > 0) {
+        if (total > 0 && wasteTax + canon > 0) {
           const taxPct = Math.round(((wasteTax + canon) / total) * 1000) / 10;
-          if (taxPct >= 30) {
-            alerts.unshift(`ℹ️ IMPACTO FISCAL ELEVADO: Las tasas municipales y autonómicas (Basura ${wasteTax.toFixed(2)}€ + Saneamiento ${canon.toFixed(2)}€) suponen el ${taxPct}% del total de la factura.`);
+          if (taxPct >= 30 && !alerts.some((a) => a.includes('IMPACTO FISCAL'))) {
+            alerts.unshift(
+              `ℹ️ IMPACTO FISCAL ELEVADO: Las tasas municipales y autonómicas (Basura ${wasteTax.toFixed(2)}€ + Saneamiento ${canon.toFixed(2)}€) suponen el ${taxPct}% del total de la factura.`
+            );
+          }
+        }
+
+        // Compare m3 / unitPrice vs immediately preceding chronological water bill
+        const prevWater = [...waterExpenses]
+          .filter((w) => !data.periodEndDate || !w.periodEndDate || w.periodEndDate < data.periodEndDate)
+          .sort((a, b) => (b.periodEndDate || b.receptionDate).localeCompare(a.periodEndDate || a.receptionDate))[0];
+
+        let priceDiffPct: number | undefined;
+        let prevUnitPrice: number | undefined;
+        if (prevWater && prevWater.unitPrice > 0 && unitPrice > 0) {
+          prevUnitPrice = prevWater.unitPrice;
+          priceDiffPct = Math.round(((unitPrice - prevWater.unitPrice) / prevWater.unitPrice) * 1000) / 10;
+          if (priceDiffPct > 5) {
+            alerts.unshift(`⚠️ SUBIDA EN COSTE POR m³: Pasa de ${prevWater.unitPrice.toFixed(3)} €/m³ a ${unitPrice.toFixed(3)} €/m³ (+${priceDiffPct}%).`);
+          } else if (priceDiffPct < -5) {
+            alerts.unshift(`📉 BAJADA EN COSTE POR m³: Pasa de ${prevWater.unitPrice.toFixed(3)} €/m³ a ${unitPrice.toFixed(3)} €/m³ (${priceDiffPct}%).`);
           }
         }
 
         const newWater: WaterExpense = {
           id: 'w_' + Date.now(),
           utilityType: 'WATER',
-          company: data.company || 'EMUASA Aguas de Murcia',
+          company: data.company || 'Suministradora de Agua',
           invoiceNumber: data.invoiceNumber || 'S/N',
           contractNumber: data.contractNumber,
           chargeDate: data.chargeDate || new Date().toLocaleDateString('es-ES'),
           receptionDate: data.receptionDate || new Date().toISOString().split('T')[0],
           periodStartDate: data.periodStartDate || '',
           periodEndDate: data.periodEndDate || '',
-          periodRange: data.periodRange || 'Periodo reciente',
-          billingDays: Number(data.billingDays) || 60,
-          costPerDay: Number(data.costPerDay) || (total / 60),
+          periodRange: data.periodRange || '',
+          billingDays: billingDays,
+          costPerDay: Number(data.costPerDay) || (billingDays > 0 ? Number((total / billingDays).toFixed(3)) : 0),
           totalAmount: tenantShare,
           fullInvoiceTotal: total,
-          m3Consumed: Number(data.m3Consumed) || 0,
-          unitPrice: Number(data.unitPrice) || 1.48,
-          contractedPower: data.contractedPower || 'Contador 15mm',
-          breakdown: data.breakdown || {
-            waterService: 0,
-            waterConsumption: 0,
-            meterConservation: 0,
-            sewerage: 0,
+          m3Consumed,
+          unitPrice,
+          prevUnitPrice,
+          priceVariationPct: priceDiffPct,
+          contractedPower: data.contractedPower || '',
+          breakdown: {
+            waterService: Number(data.breakdown?.waterService) || 0,
+            waterConsumption: Number(data.breakdown?.waterConsumption) || 0,
+            meterConservation: Number(data.breakdown?.meterConservation) || 0,
+            sewerage: Number(data.breakdown?.sewerage) || 0,
             wasteCollection: wasteTax,
             sanitationCanon: canon,
-            taxes: 0
+            taxes: Number(data.breakdown?.taxes) || 0,
           },
           waterTiers: data.waterTiers,
           municipalTaxes: data.municipalTaxes,
           alarm: {
             hasAlarm: alerts.length > 0,
             reason: alerts[0] || '',
-            alerts: alerts
+            alerts,
           },
-          notes: `${data.notes || ''} (Factura total: ${total.toFixed(2)}€, aplicado ${supplyRules.water}%)`,
-          status: 'PENDING'
+          notes: `${data.notes || 'Factura de agua revisada del PDF'} (Total: ${total.toFixed(2)}€, inquilino ${supplyRules.water}%)`,
+          status: 'PENDING',
         };
 
-        setWaterExpenses([newWater, ...waterExpenses]);
+        setWaterExpenses((prev) =>
+          [newWater, ...prev].sort((a, b) => (b.periodEndDate || b.receptionDate).localeCompare(a.periodEndDate || a.receptionDate))
+        );
         setAuditedBillPreview({
           expense: newWater,
           type: 'WATER',
-          alerts: alerts
+          priceDiffPct,
+          prevUnitPrice,
+          alerts,
         });
       } else {
+        // 1. Check for duplicates BEFORE modifying database
+        const duplicateElec = findDuplicateInvoice(
+          electricityExpenses,
+          data.invoiceNumber,
+          data.periodRange,
+          data.periodStartDate,
+          data.periodEndDate,
+          total
+        );
+        if (duplicateElec) {
+          const statusLabel = duplicateElec.status === 'PAID' ? 'COBRADA / LIQUIDADA' : 'PENDIENTE DE COBRO';
+          setScanModalFeedback({
+            kind: 'duplicate',
+            title: 'Esta factura de luz ya estaba cargada anteriormente',
+            message: `Nº Factura: ${duplicateElec.invoiceNumber} • Periodo: ${duplicateElec.periodRange || duplicateElec.chargeDate} • Total: ${(duplicateElec.fullInvoiceTotal ?? duplicateElec.totalAmount).toFixed(2)} € • Estado: ${statusLabel}. No se ha duplicado en la base de datos.`,
+            existingExpense: duplicateElec,
+          });
+          setIsScanning(false);
+          return;
+        }
+
         const splitPct = supplyRules.electricity / 100;
-        const total = Number(data.totalAmount) || 0;
         const tenantShare = Math.round(total * splitPct * 100) / 100;
         const currentKwhPrice = Number(data.unitPrice) || 0;
+        const billingDays = Number(data.billingDays) || 0;
 
-        // Compare against most recent bill
-        const prevElec = electricityExpenses[0];
+        // Compare against chronologically preceding bill (before incoming periodEndDate if known)
+        const prevElec = [...electricityExpenses]
+          .filter((e) => !data.periodEndDate || !e.periodEndDate || e.periodEndDate < data.periodEndDate)
+          .sort((a, b) => (b.periodEndDate || b.receptionDate).localeCompare(a.periodEndDate || a.receptionDate))[0];
+
         let priceDiffPct: number | undefined;
         let prevUnitPrice: number | undefined;
         const alerts: string[] = [];
@@ -1260,7 +1409,7 @@ export default function App() {
           alerts.push(...data.alarm.alerts);
         }
 
-        if (prevElec && prevElec.unitPrice && currentKwhPrice > 0) {
+        if (prevElec && prevElec.unitPrice > 0 && currentKwhPrice > 0) {
           prevUnitPrice = prevElec.unitPrice;
           const diff = ((currentKwhPrice - prevElec.unitPrice) / prevElec.unitPrice) * 100;
           priceDiffPct = Math.round(diff * 10) / 10;
@@ -1273,15 +1422,15 @@ export default function App() {
         }
 
         const extraCost = Number(data.extraServicesCost) || 0;
-        const extraName = data.extraServicesName || 'Servicio accesorio no esencial';
-        if (extraCost > 0) {
-          alerts.unshift(`🚨 COBRO NO ESENCIAL DETECTADO: Se cobran ${extraCost.toFixed(2)} € por "${extraName}". Este seguro o servicio de asistencia suele ser prescindible.`);
+        const extraName = extraCost > 0 ? data.extraServicesName || 'Servicio adicional' : undefined;
+        if (extraCost > 0 && !alerts.some((a) => a.includes('SERVICIO EXTRA') || a.includes('COBRO NO ESENCIAL'))) {
+          alerts.unshift(`🚨 COBRO NO ESENCIAL DETECTADO: Se cobran ${extraCost.toFixed(2)} € por "${extraName}".`);
         }
 
         const newElec: ElectricityExpense = {
           id: 'e_' + Date.now(),
           utilityType: 'ELECTRICITY',
-          company: data.company || 'Repsol Comercializadora',
+          company: data.company || 'Comercializadora Eléctrica',
           invoiceNumber: data.invoiceNumber || 'S/N',
           contractNumber: data.contractNumber,
           cups: data.cups,
@@ -1289,16 +1438,16 @@ export default function App() {
           receptionDate: data.receptionDate || new Date().toISOString().split('T')[0],
           periodStartDate: data.periodStartDate || '',
           periodEndDate: data.periodEndDate || '',
-          periodRange: data.periodRange || 'Periodo reciente',
-          billingDays: Number(data.billingDays) || 30,
-          costPerDay: Number(data.costPerDay) || (total / 30),
+          periodRange: data.periodRange || '',
+          billingDays,
+          costPerDay: Number(data.costPerDay) || (billingDays > 0 ? Number((total / billingDays).toFixed(3)) : 0),
           totalAmount: tenantShare,
           fullInvoiceTotal: total,
           kwhConsumed: Number(data.kwhConsumed) || 0,
           unitPrice: currentKwhPrice,
-          prevUnitPrice: prevUnitPrice,
+          prevUnitPrice,
           priceVariationPct: priceDiffPct,
-          contractedPower: data.contractedPower || '6,900 kW',
+          contractedPower: data.contractedPower || '',
           topGas: data.topGas || 'No',
           fixedTermCost: Number(data.fixedTermCost) || 0,
           energyCost: Number(data.energyCost) || 0,
@@ -1311,20 +1460,22 @@ export default function App() {
           alarm: {
             hasAlarm: alerts.length > 0,
             reason: alerts[0] || '',
-            alerts: alerts
+            alerts,
           },
-          notes: `${data.notes || ''} (Factura total: ${total.toFixed(2)}€, aplicado ${supplyRules.electricity}%)`,
-          status: 'PENDING'
+          notes: `${data.notes || 'Factura de luz revisada del PDF'} (Total: ${total.toFixed(2)}€, inquilino ${supplyRules.electricity}%)`,
+          status: 'PENDING',
         };
 
-        setElectricityExpenses([newElec, ...electricityExpenses]);
+        setElectricityExpenses((prev) =>
+          [newElec, ...prev].sort((a, b) => (b.periodEndDate || b.receptionDate).localeCompare(a.periodEndDate || a.receptionDate))
+        );
         setAuditedBillPreview({
           expense: newElec,
           type: 'ELECTRICITY',
-          priceDiffPct: priceDiffPct,
-          prevUnitPrice: prevUnitPrice,
-          alerts: alerts,
-          extraServiceWarning: extraCost > 0 ? `${extraCost.toFixed(2)} € por ${extraName}` : undefined
+          priceDiffPct,
+          prevUnitPrice,
+          alerts,
+          extraServiceWarning: extraCost > 0 && extraName ? `${extraCost.toFixed(2)} € por ${extraName}` : undefined,
         });
       }
 
@@ -1332,8 +1483,13 @@ export default function App() {
       setRawAiInput('');
       setUploadedPdfBase64(null);
       setUploadedPdfInfo(null);
+      setScanModalFeedback(null);
     } catch (err: any) {
-      alert('Error en IA: ' + err.message);
+      setScanModalFeedback({
+        kind: 'error',
+        title: 'No se pudo incorporar la factura',
+        message: err?.message || 'Error al analizar el PDF.',
+      });
     } finally {
       setIsScanning(false);
     }
@@ -2182,16 +2338,16 @@ export default function App() {
 
                 <div className="flex items-center gap-3">
                   <button
-                    onClick={() => setAiModalType('WATER')}
+                    onClick={() => openAiScanModal('WATER')}
                     className="px-4 py-2.5 bg-gradient-to-r from-cyan-600 to-teal-500 hover:from-cyan-500 text-white text-xs font-extrabold rounded-xl shadow-lg flex items-center gap-2"
                   >
-                    <Sparkles className="w-4 h-4 text-cyan-200" /> Digitalizar Agua (IA)
+                    <Upload className="w-4 h-4 text-cyan-200" /> Subir PDF Agua
                   </button>
                   <button
-                    onClick={() => setAiModalType('ELECTRICITY')}
+                    onClick={() => openAiScanModal('ELECTRICITY')}
                     className="px-4 py-2.5 bg-gradient-to-r from-amber-600 to-orange-500 hover:from-amber-500 text-white text-xs font-extrabold rounded-xl shadow-lg flex items-center gap-2"
                   >
-                    <Sparkles className="w-4 h-4 text-amber-200" /> Digitalizar Luz (IA)
+                    <Upload className="w-4 h-4 text-amber-200" /> Subir PDF Luz
                   </button>
                 </div>
               </div>
@@ -2501,10 +2657,10 @@ export default function App() {
 
                   <div className="flex items-center gap-3">
                     <button
-                      onClick={() => setAiModalType('ELECTRICITY')}
+                      onClick={() => openAiScanModal('ELECTRICITY')}
                       className="px-3.5 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 text-slate-950 text-xs font-black rounded-xl shadow-lg flex items-center gap-2"
                     >
-                      <Sparkles className="w-3.5 h-3.5" /> + Digitalizar Nueva Factura Luz (IA)
+                      <Upload className="w-3.5 h-3.5" /> + Subir Factura Luz PDF
                     </button>
                   </div>
                 </div>
@@ -2714,10 +2870,10 @@ export default function App() {
 
                   <div className="flex items-center gap-3">
                     <button
-                      onClick={() => setAiModalType('WATER')}
+                      onClick={() => openAiScanModal('WATER')}
                       className="px-3.5 py-2 bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-400 text-slate-950 text-xs font-black rounded-xl shadow-lg flex items-center gap-2"
                     >
-                      <Sparkles className="w-3.5 h-3.5" /> + Digitalizar Nueva Factura Agua (IA)
+                      <Upload className="w-3.5 h-3.5" /> + Subir Factura Agua PDF
                     </button>
                   </div>
                 </div>
@@ -4852,16 +5008,17 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL: AI OCR SCANNER (AGUA / LUZ) */}
+      {/* MODAL: SUBIR Y AUDITAR FACTURA EN PDF (AGUA / LUZ) */}
       {aiModalType && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-white/20 rounded-3xl max-w-xl w-full p-6 lg:p-8 space-y-6 shadow-2xl relative">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-white/20 rounded-3xl max-w-xl w-full p-6 lg:p-8 space-y-5 shadow-2xl relative my-8">
             <button
               onClick={() => {
                 setAiModalType(null);
                 setRawAiInput('');
                 setUploadedPdfBase64(null);
                 setUploadedPdfInfo(null);
+                setScanModalFeedback(null);
               }}
               className="absolute top-5 right-5 p-2 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors"
             >
@@ -4869,67 +5026,75 @@ export default function App() {
             </button>
 
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-cyan-600 to-indigo-600 flex items-center justify-center shadow-lg">
-                <Sparkles className="w-6 h-6 text-white" />
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg ${
+                aiModalType === 'WATER' ? 'bg-gradient-to-tr from-cyan-600 to-teal-500' : 'bg-gradient-to-tr from-amber-500 to-orange-600'
+              }`}>
+                {aiModalType === 'WATER' ? <Droplet className="w-6 h-6 text-white" /> : <Zap className="w-6 h-6 text-slate-950" />}
               </div>
               <div>
                 <h3 className="text-lg font-black text-white">
-                  Auditor de Factura de {aiModalType === 'WATER' ? 'Agua (EMUASA / Canal)' : 'Luz (Iberdrola / Endesa)'}
+                  Subir Factura PDF de {aiModalType === 'WATER' ? 'Agua (EMUASA / Canal)' : 'Luz (Repsol / Iberdrola / Endesa)'}
                 </h3>
                 <p className="text-xs text-slate-300">
-                  Aplica el prompt auditor oficial para desglosar importes y repartir el {aiModalType === 'WATER' ? supplyRules.water : supplyRules.electricity}% al inquilino.
+                  Revisa los datos reales sin inventar nada, comprueba si ya estaba guardada y aplica el {aiModalType === 'WATER' ? supplyRules.water : supplyRules.electricity}% al inquilino.
                 </p>
               </div>
             </div>
 
-            <div className="space-y-5">
-              {/* Quick Sample Loaders with Direct Real PDF Bytes */}
-              <div className="bg-slate-950/80 p-4 rounded-2xl border border-white/10 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-black text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" /> Carga Rápida de Factura Real PDF Oficial:
-                  </span>
-                  <span className="text-[10px] text-slate-400 font-mono">1 clic para probar</span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {aiModalType === 'ELECTRICITY' ? (
-                    <button
-                      type="button"
-                      disabled={isScanning}
-                      onClick={() => handleLoadSamplePdf('ELECTRICITY')}
-                      className="px-3.5 py-2 bg-gradient-to-r from-amber-500/20 to-orange-500/20 hover:from-amber-500/30 hover:to-orange-500/30 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-bold transition-all text-left flex items-center gap-2 shadow-sm"
+            {/* Duplicate or Validation Feedback Banner */}
+            {scanModalFeedback && (
+              <div
+                className={`p-4 rounded-2xl border space-y-2.5 ${
+                  scanModalFeedback.kind === 'duplicate'
+                    ? 'bg-amber-950/90 border-amber-400/60'
+                    : 'bg-red-950/90 border-red-400/60'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <AlertTriangle
+                    className={`w-5 h-5 shrink-0 mt-0.5 ${
+                      scanModalFeedback.kind === 'duplicate' ? 'text-amber-300' : 'text-red-300'
+                    }`}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <h4
+                      className={`text-sm font-black ${
+                        scanModalFeedback.kind === 'duplicate' ? 'text-amber-200' : 'text-red-200'
+                      }`}
                     >
-                      <Zap className="w-4 h-4 text-amber-400 shrink-0" />
-                      <div>
-                        <span className="block font-black text-white">Factura Real Repsol PDF (103,33 €)</span>
-                        <span className="text-[10px] text-amber-300/80 font-normal">415 kWh • 0,10115 €/kWh • Tu Asistente 24h</span>
+                      {scanModalFeedback.title}
+                    </h4>
+                    <p className="text-xs text-slate-200 mt-1 leading-relaxed">{scanModalFeedback.message}</p>
+                    {scanModalFeedback.kind === 'duplicate' && scanModalFeedback.existingExpense && (
+                      <div className="pt-2.5 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const existing = scanModalFeedback.existingExpense!;
+                            setAiModalType(null);
+                            setScanModalFeedback(null);
+                            setViewingAuditExpense(existing);
+                          }}
+                          className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs rounded-xl flex items-center gap-1.5 transition-colors"
+                        >
+                          <Eye className="w-3.5 h-3.5" /> Ver factura ya guardada
+                        </button>
                       </div>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      disabled={isScanning}
-                      onClick={() => handleLoadSamplePdf('WATER')}
-                      className="px-3.5 py-2 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 hover:from-cyan-500/30 hover:to-blue-500/30 text-cyan-300 border border-cyan-500/40 rounded-xl text-xs font-bold transition-all text-left flex items-center gap-2 shadow-sm"
-                    >
-                      <Droplet className="w-4 h-4 text-cyan-400 shrink-0" />
-                      <div>
-                        <span className="block font-black text-white">Factura Real EMUASA PDF (83,57 €)</span>
-                        <span className="text-[10px] text-cyan-300/80 font-normal">17 m³ • Basura 28,35€ • Canon 11,10€</span>
-                      </div>
-                    </button>
-                  )}
+                    )}
+                  </div>
                 </div>
               </div>
+            )}
 
-              {/* PDF & File Drag & Drop Zone */}
+            <div className="space-y-4">
+              {/* Primary Zone 1: PDF Drag & Drop / File Selector */}
               <div className="space-y-2">
                 <label className="text-xs text-slate-200 font-bold flex items-center justify-between">
                   <span className="flex items-center gap-1.5">
                     <FileText className="w-3.5 h-3.5 text-cyan-400" />
-                    Subir Factura en formato PDF (o imagen / foto):
+                    1. Adjuntar archivo PDF de la factura:
                   </span>
-                  <span className="text-[10px] text-slate-400 font-normal">PDF oficial, JPG, PNG</span>
+                  <span className="text-[10px] text-slate-400 font-normal">PDF oficial • Máx 25 MB</span>
                 </label>
 
                 {uploadedPdfInfo ? (
@@ -4947,7 +5112,7 @@ export default function App() {
                           <span>{(uploadedPdfInfo.size / 1024).toFixed(1)} KB</span>
                           <span>•</span>
                           <span className="text-emerald-400 font-bold flex items-center gap-1">
-                            <CheckCircle className="w-3 h-3" /> Archivo PDF listo para procesar
+                            <CheckCircle className="w-3 h-3" /> Listo para revisar y guardar
                           </span>
                         </div>
                       </div>
@@ -4958,6 +5123,7 @@ export default function App() {
                       onClick={() => {
                         setUploadedPdfBase64(null);
                         setUploadedPdfInfo(null);
+                        setScanModalFeedback(null);
                       }}
                       className="p-2 text-slate-400 hover:text-red-400 hover:bg-white/5 rounded-xl transition-colors shrink-0 ml-2"
                       title="Quitar archivo"
@@ -5003,31 +5169,12 @@ export default function App() {
                           Arrastra aquí tu factura en <span className="text-cyan-400 font-black">PDF</span> o pulsa para examinar
                         </p>
                         <p className="text-[11px] text-slate-400 mt-1">
-                          Compatible con Repsol, Iberdrola, Endesa, EMUASA, Canal Isabel II, Agbar
+                          Si la factura ya está en la base de datos te avisará sin duplicarla
                         </p>
                       </div>
                     </div>
                   </div>
                 )}
-              </div>
-
-              {/* Optional Manual OCR Textarea */}
-              <div className="space-y-1">
-                <details className="text-xs text-slate-400 group">
-                  <summary className="cursor-pointer font-bold hover:text-white transition-colors py-1 flex items-center gap-1.5 select-none">
-                    <ChevronRight className="w-3.5 h-3.5 transition-transform group-open:rotate-90 text-cyan-400" />
-                    <span>Pegar texto o desglose manual (opcional si ya subiste el PDF)</span>
-                  </summary>
-                  <div className="mt-2">
-                    <textarea
-                      rows={4}
-                      placeholder="Si no tienes el archivo PDF, puedes pegar aquí el texto de la factura..."
-                      value={rawAiInput}
-                      onChange={(e) => setRawAiInput(e.target.value)}
-                      className="w-full bg-slate-950 border border-white/15 rounded-2xl p-3 text-xs text-white focus:outline-none focus:border-cyan-500 font-mono"
-                    />
-                  </div>
-                </details>
               </div>
 
               {/* Action Button */}
@@ -5040,24 +5187,107 @@ export default function App() {
                 {isScanning ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
-                    <span>Procesando PDF y Extrayendo Conceptos...</span>
+                    <span>Revisando PDF y Comprobando Duplicados...</span>
                   </>
                 ) : (
                   <>
-                    <Sparkles className="w-4 h-4 text-slate-950" />
-                    <span>PROCESAR FACTURA EN PDF Y AUDITAR TARIFA</span>
+                    <FileCheck className="w-4 h-4 text-slate-950" />
+                    <span>REVISAR PDF Y ADJUNTAR A BASE DE DATOS</span>
                   </>
                 )}
               </button>
+
+              {/* Secondary: Quick Test with Uploaded Reference PDFs */}
+              <div className="bg-slate-950/60 p-3.5 rounded-2xl border border-white/10 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles className="w-3 h-3 text-cyan-400" /> Probar con tus PDFs reales adjuntos:
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {aiModalType === 'ELECTRICITY' ? (
+                    <>
+                      <button
+                        type="button"
+                        disabled={isScanning}
+                        onClick={() => handleLoadSamplePdf('ELECTRICITY', 'new')}
+                        className="px-3 py-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-500/30 rounded-xl text-[11px] font-bold transition-all text-left flex items-center gap-2"
+                      >
+                        <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        <div className="min-w-0">
+                          <span className="block font-black text-white truncate">Repsol Ago-Sep (132,16 €)</span>
+                          <span className="text-[10px] text-amber-300/80 block truncate">Factura nº 61091747645</span>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isScanning}
+                        onClick={() => handleLoadSamplePdf('ELECTRICITY', 'archived')}
+                        className="px-3 py-2 bg-white/5 hover:bg-white/10 text-slate-300 border border-white/15 rounded-xl text-[11px] font-bold transition-all text-left flex items-center gap-2"
+                      >
+                        <Zap className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <div className="min-w-0">
+                          <span className="block font-bold text-white truncate">Repsol Sep-Oct (103,33 €)</span>
+                          <span className="text-[10px] text-slate-400 block truncate">Prueba detección duplicado</span>
+                        </div>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        disabled={isScanning}
+                        onClick={() => handleLoadSamplePdf('WATER', 'new')}
+                        className="px-3 py-2 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-200 border border-cyan-500/30 rounded-xl text-[11px] font-bold transition-all text-left flex items-center gap-2"
+                      >
+                        <Droplet className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                        <div className="min-w-0">
+                          <span className="block font-black text-white truncate">EMUASA 2026/06 (91,37 €)</span>
+                          <span className="text-[10px] text-cyan-300/80 block truncate">21 m³ • Fact 06102026A101053337</span>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isScanning}
+                        onClick={() => handleLoadSamplePdf('WATER', 'archived')}
+                        className="px-3 py-2 bg-white/5 hover:bg-white/10 text-slate-300 border border-white/15 rounded-xl text-[11px] font-bold transition-all text-left flex items-center gap-2"
+                      >
+                        <Droplet className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <div className="min-w-0">
+                          <span className="block font-bold text-white truncate">EMUASA 2026/05 (83,57 €)</span>
+                          <span className="text-[10px] text-slate-400 block truncate">Prueba detección duplicado</span>
+                        </div>
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Optional Manual Textarea */}
+              <details className="text-xs text-slate-400 group">
+                <summary className="cursor-pointer font-bold hover:text-white transition-colors py-1 flex items-center gap-1.5 select-none">
+                  <ChevronRight className="w-3.5 h-3.5 transition-transform group-open:rotate-90 text-cyan-400" />
+                  <span>Pegar texto manualmente (opcional si no tienes el PDF)</span>
+                </summary>
+                <div className="mt-2">
+                  <textarea
+                    rows={3}
+                    placeholder="Pega aquí el texto extraído de la factura..."
+                    value={rawAiInput}
+                    onChange={(e) => setRawAiInput(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/15 rounded-2xl p-3 text-xs text-white focus:outline-none focus:border-cyan-500 font-mono"
+                  />
+                </div>
+              </details>
             </div>
           </div>
         </div>
       )}
 
-      {/* MODAL 1: ALERTA Y RESULTADO DE AUDITORÍA INTELIGENTE TRAS ESCANEO */}
+      {/* MODAL 1: RESULTADO DE REVISIÓN Y GUARDADO EN BASE DE DATOS */}
       {auditedBillPreview && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-cyan-500/40 rounded-3xl max-w-2xl w-full p-6 lg:p-8 space-y-6 shadow-2xl relative animate-scaleUp max-h-[90vh] overflow-y-auto">
+          <div className="bg-slate-900 border border-emerald-500/40 rounded-3xl max-w-2xl w-full p-6 lg:p-8 space-y-5 shadow-2xl relative animate-scaleUp max-h-[90vh] overflow-y-auto">
             <button
               onClick={() => setAuditedBillPreview(null)}
               className="absolute top-5 right-5 p-2 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors"
@@ -5065,22 +5295,29 @@ export default function App() {
               <X className="w-5 h-5" />
             </button>
 
+            {/* Saved confirmation badge */}
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[11px] font-black">
+              <CheckCircle className="w-3.5 h-3.5" /> REVISADA Y ADJUNTADA A LA BASE DE DATOS (SIN DATOS INVENTADOS)
+            </div>
+
             {/* Header */}
             <div className="flex items-center gap-3 border-b border-white/10 pb-4">
-              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-orange-500 flex items-center justify-center shadow-lg text-slate-950">
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg text-slate-950 ${
+                auditedBillPreview.type === 'ELECTRICITY' ? 'bg-gradient-to-tr from-amber-500 to-orange-500' : 'bg-gradient-to-tr from-cyan-400 to-teal-500'
+              }`}>
                 {auditedBillPreview.type === 'ELECTRICITY' ? <Zap className="w-6 h-6" /> : <Droplet className="w-6 h-6" />}
               </div>
               <div>
                 <span className="text-[10px] font-mono uppercase tracking-widest text-cyan-400 block font-bold">
-                  Auditoría Energética & Tarifaria Gemini 3.8 Flash
+                  Nº Factura: {auditedBillPreview.expense.invoiceNumber} • {auditedBillPreview.expense.chargeDate}
                 </span>
                 <h3 className="text-xl font-black text-white">
-                  Informe de Auditoría: {auditedBillPreview.expense.company}
+                  {auditedBillPreview.expense.company}
                 </h3>
               </div>
             </div>
 
-            {/* Glowing Alert Banners */}
+            {/* Alert Banners */}
             <div className="space-y-3">
               {auditedBillPreview.type === 'ELECTRICITY' && auditedBillPreview.priceDiffPct !== undefined && (
                 <div>
@@ -5089,13 +5326,12 @@ export default function App() {
                       <TrendingDown className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
                       <div>
                         <h4 className="text-sm font-black text-emerald-300">
-                          📉 ¡BAJADA DE PRECIO DETECTADA! (-{Math.abs(auditedBillPreview.priceDiffPct)}%)
+                          📉 ¡BAJADA DE PRECIO DETECTADA! ({auditedBillPreview.priceDiffPct}%)
                         </h4>
                         <p className="text-xs text-slate-200 mt-1">
-                          El precio de la energía ha bajado de{' '}
-                          <span className="font-mono font-bold text-white">{auditedBillPreview.prevUnitPrice?.toFixed(6)} €/kWh</span> a{' '}
-                          <span className="font-mono font-black text-emerald-300">{(auditedBillPreview.expense as ElectricityExpense).unitPrice.toFixed(6)} €/kWh</span>.
-                          Esto supone un ahorro directo en el término de consumo.
+                          El precio kWh baja de{' '}
+                          <span className="font-mono font-bold text-white">{auditedBillPreview.prevUnitPrice?.toFixed(5)} €/kWh</span> a{' '}
+                          <span className="font-mono font-black text-emerald-300">{(auditedBillPreview.expense as ElectricityExpense).unitPrice.toFixed(5)} €/kWh</span>.
                         </p>
                       </div>
                     </div>
@@ -5108,9 +5344,8 @@ export default function App() {
                         </h4>
                         <p className="text-xs text-slate-200 mt-1">
                           El coste por kWh ha aumentado de{' '}
-                          <span className="font-mono font-bold text-white">{auditedBillPreview.prevUnitPrice?.toFixed(6)} €</span> a{' '}
-                          <span className="font-mono font-black text-red-300">{(auditedBillPreview.expense as ElectricityExpense).unitPrice.toFixed(6)} €</span>.
-                          Comprueba si ha vencido la promoción anual o cambio de condiciones.
+                          <span className="font-mono font-bold text-white">{auditedBillPreview.prevUnitPrice?.toFixed(5)} €</span> a{' '}
+                          <span className="font-mono font-black text-red-300">{(auditedBillPreview.expense as ElectricityExpense).unitPrice.toFixed(5)} €</span>.
                         </p>
                       </div>
                     </div>
@@ -5118,7 +5353,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* Extra Services Alert (Tu Asistente 24h) */}
+              {/* Extra Services Alert */}
               {auditedBillPreview.extraServiceWarning && (
                 <div className="p-4 rounded-2xl bg-amber-950/80 border border-amber-500/50 flex items-start gap-3">
                   <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
@@ -5127,26 +5362,33 @@ export default function App() {
                       🚨 COBRO NO ESENCIAL DETECTADO: {auditedBillPreview.extraServiceWarning}
                     </h4>
                     <p className="text-xs text-slate-200 mt-1">
-                      Este servicio corresponde a seguros o asistencias de la comercializadora (Repsol), no a consumo ni a peajes de red. Puedes llamar y solicitar la baja para ahorrar ~48,72 € al año.
+                      Servicio adicional externo al suministro eléctrico. Conviene revisar si se desea mantener o dar de baja.
                     </p>
                   </div>
                 </div>
               )}
 
-              {/* Water Municipal Taxes Alert */}
-              {auditedBillPreview.type === 'WATER' && (
-                <div className="p-4 rounded-2xl bg-cyan-950/80 border border-cyan-500/50 flex items-start gap-3">
-                  <Info className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
-                  <div>
-                    <h4 className="text-sm font-black text-cyan-300">
-                      🏛️ DESGLOSE DE TASAS MUNICIPALES (EMUASA)
-                    </h4>
-                    <p className="text-xs text-slate-200 mt-1">
-                      Tasa de Basura del Ayuntamiento de Murcia: <span className="font-mono font-bold text-white">28,35 €</span> (33,9% de la factura) + Canon de Saneamiento Autonómico ESAMUR: <span className="font-mono font-bold text-white">11,10 €</span>. Las tasas públicas representan casi la mitad del recibo.
-                    </p>
+              {/* Dynamic Water Municipal Taxes Summary */}
+              {auditedBillPreview.type === 'WATER' && (() => {
+                const w = auditedBillPreview.expense as WaterExpense;
+                const wasteVal = w.breakdown?.wasteCollection ?? 0;
+                const canonVal = w.breakdown?.sanitationCanon ?? 0;
+                const fullVal = w.fullInvoiceTotal || 1;
+                const pct = Math.round(((wasteVal + canonVal) / fullVal) * 1000) / 10;
+                return (
+                  <div className="p-4 rounded-2xl bg-cyan-950/80 border border-cyan-500/50 flex items-start gap-3">
+                    <Info className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="text-sm font-black text-cyan-300">
+                        🏛️ DESGLOSE REAL DE TASAS MUNICIPALES
+                      </h4>
+                      <p className="text-xs text-slate-200 mt-1">
+                        Tasa de Basura: <span className="font-mono font-bold text-white">{wasteVal.toFixed(2)} €</span> • Canon de Saneamiento: <span className="font-mono font-bold text-white">{canonVal.toFixed(2)} €</span> ({pct}% de la factura total).
+                      </p>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
             </div>
 
             {/* Bill Summary Card */}
@@ -5158,34 +5400,55 @@ export default function App() {
                 </div>
                 <div>
                   <span className="text-slate-400 text-[10px] uppercase font-bold block">Total Factura</span>
-                  <span className="text-white font-mono font-bold">{(auditedBillPreview.expense.fullInvoiceTotal || auditedBillPreview.expense.totalAmount * 2).toFixed(2)} €</span>
+                  <span className="text-white font-mono font-bold">{(auditedBillPreview.expense.fullInvoiceTotal ?? auditedBillPreview.expense.totalAmount).toFixed(2)} €</span>
                 </div>
                 <div>
                   <span className="text-slate-400 text-[10px] uppercase font-bold block">Parte Inquilino</span>
                   <span className="text-emerald-400 font-mono font-black">{auditedBillPreview.expense.totalAmount.toFixed(2)} €</span>
                 </div>
                 <div>
-                  <span className="text-slate-400 text-[10px] uppercase font-bold block">Consumo Registrado</span>
+                  <span className="text-slate-400 text-[10px] uppercase font-bold block">Consumo Real</span>
                   <span className="text-amber-300 font-mono font-bold">
-                    {auditedBillPreview.type === 'ELECTRICITY' 
-                      ? `${(auditedBillPreview.expense as ElectricityExpense).kwhConsumed} kWh` 
+                    {auditedBillPreview.type === 'ELECTRICITY'
+                      ? `${(auditedBillPreview.expense as ElectricityExpense).kwhConsumed} kWh`
                       : `${(auditedBillPreview.expense as WaterExpense).m3Consumed} m³`}
                   </span>
                 </div>
               </div>
+              {auditedBillPreview.type === 'ELECTRICITY' && (auditedBillPreview.expense as ElectricityExpense).hourlyTiers && (
+                <div className="pt-2 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-300">
+                  <span>
+                    Precio kWh: <strong className="text-white font-mono">{(auditedBillPreview.expense as ElectricityExpense).unitPrice.toFixed(5)} €/kWh</strong>
+                  </span>
+                  <span className="font-mono text-purple-300">
+                    Punta {(auditedBillPreview.expense as ElectricityExpense).hourlyTiers?.puntaKwh || 0} • Llano {(auditedBillPreview.expense as ElectricityExpense).hourlyTiers?.llanoKwh || 0} • Valle {(auditedBillPreview.expense as ElectricityExpense).hourlyTiers?.valleKwh || 0} kWh
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Actions */}
-            <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
+            <div className="flex flex-col sm:flex-row items-center gap-2.5 pt-2">
               <button
                 onClick={() => {
+                  const targetType = auditedBillPreview.type;
                   setAuditedBillPreview(null);
                   setActiveTab('expenses');
-                  setExpensesSubTab(auditedBillPreview.type === 'ELECTRICITY' ? 'audit_elec' : 'audit_water');
+                  setExpensesSubTab(targetType === 'ELECTRICITY' ? 'audit_elec' : 'audit_water');
                 }}
-                className="w-full sm:w-auto flex-1 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 text-slate-950 font-black text-xs rounded-xl shadow-lg transition-all flex items-center justify-center gap-2"
+                className="w-full sm:w-auto flex-1 py-3 px-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 text-slate-950 font-black text-xs rounded-xl shadow-lg transition-all flex items-center justify-center gap-2"
               >
-                <Check className="w-4 h-4" /> Aceptar e Incorporar a la Auditoría
+                <Check className="w-4 h-4" /> Ver en Auditoría
+              </button>
+              <button
+                onClick={() => {
+                  const targetType = auditedBillPreview.type;
+                  setAuditedBillPreview(null);
+                  openAiScanModal(targetType);
+                }}
+                className="w-full sm:w-auto py-3 px-4 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl border border-white/15 transition-all flex items-center justify-center gap-2"
+              >
+                <Upload className="w-4 h-4" /> Subir otro PDF
               </button>
               <button
                 onClick={() => {
@@ -5196,7 +5459,7 @@ export default function App() {
                 }}
                 className="w-full sm:w-auto py-3 px-4 bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 text-white font-black text-xs rounded-xl shadow-lg transition-all flex items-center justify-center gap-2"
               >
-                <Plus className="w-4 h-4" /> Añadir Directamente a Recibo Borrador
+                <Plus className="w-4 h-4" /> Añadir a Recibo
               </button>
             </div>
           </div>
@@ -5243,11 +5506,11 @@ export default function App() {
               </div>
               <div>
                 <span className="text-slate-400 text-[10px] uppercase font-bold block">Días Facturados</span>
-                <span className="text-white font-mono">{viewingAuditExpense.billingDays || (viewingAuditExpense.utilityType === 'ELECTRICITY' ? 30 : 60)} días</span>
+                <span className="text-white font-mono">{viewingAuditExpense.billingDays || 0} días</span>
               </div>
               <div>
                 <span className="text-slate-400 text-[10px] uppercase font-bold block">Total Factura Completa</span>
-                <span className="text-white font-mono font-bold text-sm">{(viewingAuditExpense.fullInvoiceTotal || viewingAuditExpense.totalAmount * 2).toFixed(2)} €</span>
+                <span className="text-white font-mono font-bold text-sm">{(viewingAuditExpense.fullInvoiceTotal ?? viewingAuditExpense.totalAmount).toFixed(2)} €</span>
               </div>
               <div>
                 <span className="text-slate-400 text-[10px] uppercase font-bold block">A Cargo Inquilino</span>
@@ -5256,9 +5519,11 @@ export default function App() {
               <div>
                 <span className="text-slate-400 text-[10px] uppercase font-bold block">Coste Diario</span>
                 <span className="text-slate-300 font-mono">
-                  {viewingAuditExpense.costPerDay 
-                    ? `${viewingAuditExpense.costPerDay.toFixed(3)} €/día` 
-                    : `${((viewingAuditExpense.fullInvoiceTotal || viewingAuditExpense.totalAmount * 2) / (viewingAuditExpense.billingDays || 30)).toFixed(3)} €/día`}
+                  {viewingAuditExpense.costPerDay
+                    ? `${viewingAuditExpense.costPerDay.toFixed(3)} €/día`
+                    : viewingAuditExpense.billingDays
+                      ? `${((viewingAuditExpense.fullInvoiceTotal ?? viewingAuditExpense.totalAmount) / viewingAuditExpense.billingDays).toFixed(3)} €/día`
+                      : '-'}
                 </span>
               </div>
             </div>
@@ -5267,7 +5532,7 @@ export default function App() {
             {viewingAuditExpense.utilityType === 'ELECTRICITY' && (
               <div className="space-y-4">
                 <h4 className="text-xs font-black uppercase tracking-wider text-amber-300 flex items-center gap-2">
-                  <Zap className="w-3.5 h-3.5" /> Desglose Energético Repsol
+                  <Zap className="w-3.5 h-3.5" /> Desglose Energético
                 </h4>
                 <div className="bg-slate-950/80 p-4 rounded-2xl border border-white/10 space-y-3 text-xs">
                   <div className="flex justify-between items-center py-1 border-b border-white/5">
@@ -5276,11 +5541,15 @@ export default function App() {
                   </div>
                   <div className="flex justify-between items-center py-1 border-b border-white/5">
                     <span className="text-slate-300">Potencia Contratada:</span>
-                    <span className="font-mono text-white">{(viewingAuditExpense as ElectricityExpense).contractedPower || '6,900 kW'}</span>
+                    <span className="font-mono text-white">{(viewingAuditExpense as ElectricityExpense).contractedPower || '-'}</span>
                   </div>
                   <div className="flex justify-between items-center py-1 border-b border-white/5">
                     <span className="text-slate-300">Término Fijo de Potencia:</span>
-                    <span className="font-mono text-white">{((viewingAuditExpense as ElectricityExpense).fixedTermCost || 33.92).toFixed(2)} €</span>
+                    <span className="font-mono text-white">{((viewingAuditExpense as ElectricityExpense).fixedTermCost ?? 0).toFixed(2)} €</span>
+                  </div>
+                  <div className="flex justify-between items-center py-1 border-b border-white/5">
+                    <span className="text-slate-300">Término de Energía:</span>
+                    <span className="font-mono text-white">{((viewingAuditExpense as ElectricityExpense).energyCost ?? 0).toFixed(2)} €</span>
                   </div>
                   <div className="flex justify-between items-center py-1 border-b border-white/5">
                     <span className="text-slate-300">Consumo Total:</span>
@@ -5297,7 +5566,7 @@ export default function App() {
                   {(viewingAuditExpense as ElectricityExpense).extraServicesCost ? (
                     <div className="flex justify-between items-center py-1 bg-amber-950/40 p-2 rounded-xl border border-amber-500/30">
                       <span className="text-amber-300 font-bold flex items-center gap-1.5">
-                        <AlertTriangle className="w-3.5 h-3.5" /> {(viewingAuditExpense as ElectricityExpense).extraServicesName || 'Tu Asistente 24h'}
+                        <AlertTriangle className="w-3.5 h-3.5" /> {(viewingAuditExpense as ElectricityExpense).extraServicesName || 'Servicio adicional'}
                       </span>
                       <span className="font-mono font-black text-amber-300">
                         {((viewingAuditExpense as ElectricityExpense).extraServicesCost || 0).toFixed(2)} €
@@ -5312,30 +5581,34 @@ export default function App() {
             {viewingAuditExpense.utilityType === 'WATER' && (
               <div className="space-y-4">
                 <h4 className="text-xs font-black uppercase tracking-wider text-cyan-300 flex items-center gap-2">
-                  <Droplet className="w-3.5 h-3.5" /> Desglose Tarifario y Municipal EMUASA
+                  <Droplet className="w-3.5 h-3.5" /> Desglose Tarifario y Municipal
                 </h4>
                 <div className="bg-slate-950/80 p-4 rounded-2xl border border-white/10 space-y-2 text-xs">
                   <div className="flex justify-between items-center py-1 border-b border-white/5">
                     <span className="text-slate-300">Cuota Servicio Abastecimiento:</span>
-                    <span className="font-mono text-white">{((viewingAuditExpense as WaterExpense).breakdown?.waterService || 13.80).toFixed(2)} €</span>
+                    <span className="font-mono text-white">{((viewingAuditExpense as WaterExpense).breakdown?.waterService ?? 0).toFixed(2)} €</span>
                   </div>
                   <div className="flex justify-between items-center py-1 border-b border-white/5">
-                    <span className="text-slate-300">Consumo Variable de Agua:</span>
-                    <span className="font-mono text-white">{((viewingAuditExpense as WaterExpense).breakdown?.waterConsumption || 15.90).toFixed(2)} €</span>
+                    <span className="text-slate-300">Consumo Variable de Agua ({(viewingAuditExpense as WaterExpense).m3Consumed} m³):</span>
+                    <span className="font-mono text-white">{((viewingAuditExpense as WaterExpense).breakdown?.waterConsumption ?? 0).toFixed(2)} €</span>
                   </div>
                   <div className="flex justify-between items-center py-1 border-b border-white/5 bg-amber-950/40 p-2 rounded-xl border border-amber-500/30">
-                    <span className="text-amber-300 font-bold">Tasa de Basuras (Ayuntamiento de Murcia):</span>
-                    <span className="font-mono font-black text-amber-300">{((viewingAuditExpense as WaterExpense).breakdown?.wasteCollection || 28.35).toFixed(2)} €</span>
+                    <span className="text-amber-300 font-bold">Tasa de Basuras Municipal:</span>
+                    <span className="font-mono font-black text-amber-300">{((viewingAuditExpense as WaterExpense).breakdown?.wasteCollection ?? 0).toFixed(2)} €</span>
                   </div>
                   <div className="flex justify-between items-center py-1 border-b border-white/5">
-                    <span className="text-slate-300">Canon de Saneamiento (ESAMUR):</span>
-                    <span className="font-mono text-white">{((viewingAuditExpense as WaterExpense).breakdown?.sanitationCanon || 11.10).toFixed(2)} €</span>
+                    <span className="text-slate-300">Canon de Saneamiento:</span>
+                    <span className="font-mono text-white">{((viewingAuditExpense as WaterExpense).breakdown?.sanitationCanon ?? 0).toFixed(2)} €</span>
                   </div>
-                  <div className="flex justify-between items-center py-1">
+                  <div className="flex justify-between items-center py-1 border-b border-white/5">
                     <span className="text-slate-300">Alcantarillado & Contador:</span>
                     <span className="font-mono text-white">
-                      {(((viewingAuditExpense as WaterExpense).breakdown?.sewerage || 8.58) + ((viewingAuditExpense as WaterExpense).breakdown?.meterConservation || 0.67)).toFixed(2)} €
+                      {(((viewingAuditExpense as WaterExpense).breakdown?.sewerage ?? 0) + ((viewingAuditExpense as WaterExpense).breakdown?.meterConservation ?? 0)).toFixed(2)} €
                     </span>
+                  </div>
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-slate-300">IVA Aplicado:</span>
+                    <span className="font-mono text-white">{((viewingAuditExpense as WaterExpense).breakdown?.taxes ?? 0).toFixed(2)} €</span>
                   </div>
                 </div>
               </div>
@@ -5348,14 +5621,14 @@ export default function App() {
               </span>
               <p className="text-xs text-slate-300 font-mono bg-slate-900 p-3 rounded-xl border border-white/5">
                 {viewingAuditExpense.utilityType === 'ELECTRICITY'
-                  ? `Factura de luz ${viewingAuditExpense.company} del periodo ${viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}: Consumo de ${(viewingAuditExpense as ElectricityExpense).kwhConsumed} kWh a ${(viewingAuditExpense as ElectricityExpense).unitPrice.toFixed(5)} €/kWh. Total factura: ${(viewingAuditExpense.fullInvoiceTotal || viewingAuditExpense.totalAmount * 2).toFixed(2)} €. Cuota inquilino (${supplyRules.electricity}%): ${viewingAuditExpense.totalAmount.toFixed(2)} €.`
-                  : `Factura de agua ${viewingAuditExpense.company} del periodo ${viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}: Consumo ${(viewingAuditExpense as WaterExpense).m3Consumed} m³ más tasas municipales de basura (${((viewingAuditExpense as WaterExpense).breakdown?.wasteCollection || 28.35).toFixed(2)}€) y canon de saneamiento (${((viewingAuditExpense as WaterExpense).breakdown?.sanitationCanon || 11.10).toFixed(2)}€). Total factura: ${(viewingAuditExpense.fullInvoiceTotal || viewingAuditExpense.totalAmount * 2).toFixed(2)} €. Cuota inquilino (${supplyRules.water}%): ${viewingAuditExpense.totalAmount.toFixed(2)} €.`}
+                  ? `Factura de luz ${viewingAuditExpense.company} (${viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}): Consumo de ${(viewingAuditExpense as ElectricityExpense).kwhConsumed} kWh a ${(viewingAuditExpense as ElectricityExpense).unitPrice.toFixed(5)} €/kWh. Total factura: ${(viewingAuditExpense.fullInvoiceTotal ?? viewingAuditExpense.totalAmount).toFixed(2)} €. Cuota inquilino (${supplyRules.electricity}%): ${viewingAuditExpense.totalAmount.toFixed(2)} €.`
+                  : `Factura de agua ${viewingAuditExpense.company} (${viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}): Consumo ${(viewingAuditExpense as WaterExpense).m3Consumed} m³ más tasas de basura (${((viewingAuditExpense as WaterExpense).breakdown?.wasteCollection ?? 0).toFixed(2)}€) y canon saneamiento (${((viewingAuditExpense as WaterExpense).breakdown?.sanitationCanon ?? 0).toFixed(2)}€). Total factura: ${(viewingAuditExpense.fullInvoiceTotal ?? viewingAuditExpense.totalAmount).toFixed(2)} €. Cuota inquilino (${supplyRules.water}%): ${viewingAuditExpense.totalAmount.toFixed(2)} €.`}
               </p>
               <button
                 onClick={() => {
                   const text = viewingAuditExpense.utilityType === 'ELECTRICITY'
-                    ? `Factura de luz ${viewingAuditExpense.company} del periodo ${viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}: Consumo de ${(viewingAuditExpense as ElectricityExpense).kwhConsumed} kWh a ${(viewingAuditExpense as ElectricityExpense).unitPrice.toFixed(5)} €/kWh. Total factura: ${(viewingAuditExpense.fullInvoiceTotal || viewingAuditExpense.totalAmount * 2).toFixed(2)} €. Cuota inquilino (${supplyRules.electricity}%): ${viewingAuditExpense.totalAmount.toFixed(2)} €.`
-                    : `Factura de agua ${viewingAuditExpense.company} del periodo ${viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}: Consumo ${(viewingAuditExpense as WaterExpense).m3Consumed} m³ más tasas municipales de basura (${((viewingAuditExpense as WaterExpense).breakdown?.wasteCollection || 28.35).toFixed(2)}€) y canon de saneamiento (${((viewingAuditExpense as WaterExpense).breakdown?.sanitationCanon || 11.10).toFixed(2)}€). Total factura: ${(viewingAuditExpense.fullInvoiceTotal || viewingAuditExpense.totalAmount * 2).toFixed(2)} €. Cuota inquilino (${supplyRules.water}%): ${viewingAuditExpense.totalAmount.toFixed(2)} €.`;
+                    ? `Factura de luz ${viewingAuditExpense.company} (${viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}): Consumo de ${(viewingAuditExpense as ElectricityExpense).kwhConsumed} kWh a ${(viewingAuditExpense as ElectricityExpense).unitPrice.toFixed(5)} €/kWh. Total factura: ${(viewingAuditExpense.fullInvoiceTotal ?? viewingAuditExpense.totalAmount).toFixed(2)} €. Cuota inquilino (${supplyRules.electricity}%): ${viewingAuditExpense.totalAmount.toFixed(2)} €.`
+                    : `Factura de agua ${viewingAuditExpense.company} (${viewingAuditExpense.periodRange || viewingAuditExpense.chargeDate}): Consumo ${(viewingAuditExpense as WaterExpense).m3Consumed} m³ más tasas de basura (${((viewingAuditExpense as WaterExpense).breakdown?.wasteCollection ?? 0).toFixed(2)}€) y canon saneamiento (${((viewingAuditExpense as WaterExpense).breakdown?.sanitationCanon ?? 0).toFixed(2)}€). Total factura: ${(viewingAuditExpense.fullInvoiceTotal ?? viewingAuditExpense.totalAmount).toFixed(2)} €. Cuota inquilino (${supplyRules.water}%): ${viewingAuditExpense.totalAmount.toFixed(2)} €.`;
                   copyToClipboard(text);
                 }}
                 className="w-full py-2 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-2"
