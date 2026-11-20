@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,6 +8,303 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// --- Security Limits & Constants ---
+const MAX_TEXT_LENGTH = 120_000;
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB decoded binary limit
+const PDF_PARSE_TIMEOUT_MS = 10_000;
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000; // 15 min
+const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX) || 20;
+const ALLOWED_MIME_TYPES = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/webp',
+]);
+
+// --- Security Logging & Suspicious Activity Detector (Zero PII / Zero Secrets) ---
+const suspiciousBurstStore = new Map<string, number[]>();
+
+function getClientIp(req: Request): string {
+  const fwd = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(fwd) ? fwd[0] : typeof fwd === 'string' ? fwd.split(',')[0] : req.ip || req.socket.remoteAddress || 'unknown';
+  return String(raw).trim().slice(0, 64);
+}
+
+function logSecurityEvent(
+  severity: 'INFO' | 'WARN' | 'ALERT',
+  event: string,
+  req: Request,
+  details?: Record<string, string | number | boolean>
+) {
+  const entry = {
+    ts: new Date().toISOString(),
+    severity,
+    event,
+    ip: getClientIp(req),
+    method: req.method,
+    path: req.path,
+    ...(details ? { details } : {}),
+  };
+  if (severity === 'ALERT') {
+    console.error('[SECURITY]', JSON.stringify(entry));
+  } else {
+    console.warn('[SECURITY]', JSON.stringify(entry));
+  }
+}
+
+function trackSuspiciousEvent(req: Request, reason: string) {
+  const ip = getClientIp(req);
+  const now = Date.now();
+  const recent = (suspiciousBurstStore.get(ip) || []).filter((ts) => now - ts < 60_000);
+  recent.push(now);
+  suspiciousBurstStore.set(ip, recent);
+  if (recent.length >= 10) {
+    logSecurityEvent('ALERT', 'SUSPICIOUS_BURST_ACTIVITY', req, {
+      reason,
+      eventsLast60s: recent.length,
+    });
+  }
+  if (suspiciousBurstStore.size > 5000) {
+    for (const [k, list] of suspiciousBurstStore.entries()) {
+      if (list.every((ts) => now - ts >= 60_000)) suspiciousBurstStore.delete(k);
+    }
+  }
+}
+
+// --- Sliding-Window Rate Limiter ---
+function createRateLimiter(windowMs: number, maxRequests: number) {
+  const hits = new Map<string, number[]>();
+
+  return (req: Request, res: Response, next: NextFunction) => {
+    const ip = getClientIp(req);
+    const now = Date.now();
+    const recent = (hits.get(ip) || []).filter((ts) => now - ts < windowMs);
+
+    if (recent.length >= maxRequests) {
+      const oldestInWindow = recent[0];
+      const retryAfterSec = Math.max(1, Math.ceil((windowMs - (now - oldestInWindow)) / 1000));
+      res.setHeader('Retry-After', String(retryAfterSec));
+      res.setHeader('X-RateLimit-Limit', String(maxRequests));
+      res.setHeader('X-RateLimit-Remaining', '0');
+      logSecurityEvent('WARN', 'RATE_LIMIT_EXCEEDED', req, { maxRequests, windowMs });
+      trackSuspiciousEvent(req, 'RATE_LIMIT_EXCEEDED');
+      return res.status(429).json({
+        error: 'Demasiadas peticiones en poco tiempo. Espera unos minutos antes de volver a intentarlo.',
+      });
+    }
+
+    recent.push(now);
+    hits.set(ip, recent);
+    res.setHeader('X-RateLimit-Limit', String(maxRequests));
+    res.setHeader('X-RateLimit-Remaining', String(Math.max(0, maxRequests - recent.length)));
+
+    if (hits.size > 5000) {
+      for (const [k, list] of hits.entries()) {
+        if (list.every((ts) => now - ts >= windowMs)) hits.delete(k);
+      }
+    }
+
+    next();
+  };
+}
+
+// --- Strict CORS & Anti-CSRF Origin Verification ---
+function getAllowedOrigins(req: Request): Set<string> {
+  const allowed = new Set<string>([
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+  ]);
+
+  if (process.env.APP_URL) {
+    try {
+      allowed.add(new URL(process.env.APP_URL).origin);
+    } catch {
+      // Ignore malformed APP_URL
+    }
+  }
+
+  if (process.env.CORS_ALLOWED_ORIGINS) {
+    for (const item of process.env.CORS_ALLOWED_ORIGINS.split(',')) {
+      const trimmed = item.trim();
+      if (trimmed) {
+        try {
+          allowed.add(new URL(trimmed).origin);
+        } catch {
+          // Ignore malformed entry
+        }
+      }
+    }
+  }
+
+  const host = req.headers.host;
+  if (host && /^[a-zA-Z0-9.-]+(:\d{1,5})?$/.test(host)) {
+    const proto = req.headers['x-forwarded-proto'] === 'https' || req.secure ? 'https' : 'http';
+    allowed.add(`${proto}://${host}`);
+    allowed.add(`https://${host}`);
+  }
+
+  return allowed;
+}
+
+// --- Upload Validation (Size, MIME Allowlist & Binary Magic Bytes) ---
+interface ValidatedUploadPayload {
+  text: string;
+  buffer?: Buffer;
+  cleanBase64?: string;
+  detectedMimeType?: string;
+  safeFileName: string;
+}
+
+function matchesMagicBytes(buffer: Buffer, declaredMime: string): string | null {
+  if (buffer.length < 4) return null;
+
+  // PDF: "%PDF-" (may appear within first 16 bytes)
+  const headerSlice = buffer.subarray(0, Math.min(16, buffer.length)).toString('ascii');
+  if (headerSlice.includes('%PDF-')) {
+    return declaredMime === 'application/pdf' ? 'application/pdf' : null;
+  }
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return declaredMime === 'image/png' ? 'image/png' : null;
+  }
+
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return declaredMime === 'image/jpeg' || declaredMime === 'image/jpg' ? 'image/jpeg' : null;
+  }
+
+  // WEBP: "RIFF" + 4 bytes + "WEBP"
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return declaredMime === 'image/webp' ? 'image/webp' : null;
+  }
+
+  return null;
+}
+
+function sanitizeFileName(rawName: unknown): string {
+  if (typeof rawName !== 'string' || !rawName.trim()) return 'documento.pdf';
+  const base = path.basename(rawName.trim());
+  const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+/, '');
+  return (cleaned || 'documento.pdf').slice(0, 120);
+}
+
+function validateBillUploadBody(body: unknown): { payload?: ValidatedUploadPayload; error?: string } {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { error: 'Formato de petición inválido.' };
+  }
+
+  const record = body as Record<string, unknown>;
+  const rawText = record.text;
+  const rawFile = record.fileBase64 ?? record.image;
+  const rawMime = record.mimeType;
+  const safeFileName = sanitizeFileName(record.fileName);
+
+  if (rawText !== undefined && typeof rawText !== 'string') {
+    return { error: 'El campo de texto debe ser una cadena válida.' };
+  }
+  const text = (typeof rawText === 'string' ? rawText : '').replace(/\0/g, '');
+  if (text.length > MAX_TEXT_LENGTH) {
+    return { error: `El texto supera el límite máximo permitido (${MAX_TEXT_LENGTH} caracteres).` };
+  }
+
+  if (!text.trim() && !rawFile) {
+    return { error: 'Se requiere adjuntar el archivo PDF de la factura o pegar su texto.' };
+  }
+
+  if (rawFile === undefined || rawFile === null || rawFile === '') {
+    return { payload: { text, safeFileName } };
+  }
+
+  if (typeof rawFile !== 'string') {
+    return { error: 'El archivo adjunto tiene un formato inválido.' };
+  }
+
+  let declaredMime = typeof rawMime === 'string' ? rawMime.trim().toLowerCase() : '';
+  let cleanBase64 = rawFile;
+
+  const dataUrlMatch = rawFile.match(/^data:([a-z0-9.+/-]+);base64,(.+)$/is);
+  if (dataUrlMatch) {
+    if (!declaredMime) declaredMime = dataUrlMatch[1].toLowerCase();
+    cleanBase64 = dataUrlMatch[2];
+  } else if (rawFile.includes(',')) {
+    return { error: 'Cabecera Data URL no válida o no admitida.' };
+  }
+
+  cleanBase64 = cleanBase64.replace(/\s+/g, '');
+  if (!cleanBase64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(cleanBase64)) {
+    return { error: 'El contenido codificado en Base64 no es válido.' };
+  }
+
+  const approxBytes = Math.floor((cleanBase64.length * 3) / 4);
+  if (approxBytes > MAX_UPLOAD_BYTES) {
+    return { error: 'El archivo excede el tamaño máximo permitido de 10 MB.' };
+  }
+
+  const buffer = Buffer.from(cleanBase64, 'base64');
+  if (buffer.length === 0 || buffer.length > MAX_UPLOAD_BYTES) {
+    return { error: 'El archivo está vacío o supera el límite de 10 MB.' };
+  }
+
+  if (!declaredMime) {
+    if (buffer.subarray(0, 16).toString('ascii').includes('%PDF-')) {
+      declaredMime = 'application/pdf';
+    } else if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+      declaredMime = 'image/jpeg';
+    } else if (buffer[0] === 0x89 && buffer[1] === 0x50) {
+      declaredMime = 'image/png';
+    }
+  }
+
+  if (!ALLOWED_MIME_TYPES.has(declaredMime)) {
+    return { error: 'Tipo de archivo no permitido. Solo se admiten PDF, PNG, JPEG o WEBP.' };
+  }
+
+  const verifiedMime = matchesMagicBytes(buffer, declaredMime);
+  if (!verifiedMime) {
+    return { error: 'La firma binaria del archivo no coincide con un PDF o imagen válida.' };
+  }
+
+  return {
+    payload: {
+      text,
+      buffer,
+      cleanBase64,
+      detectedMimeType: verifiedMime,
+      safeFileName,
+    },
+  };
+}
+
+function sanitizeParsedBillOutput(raw: unknown, expectedUtility: 'WATER' | 'ELECTRICITY'): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  const safeClone = JSON.parse(
+    JSON.stringify(obj, (key, value) => {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+      return value;
+    })
+  ) as Record<string, unknown>;
+  safeClone.utilityType = expectedUtility;
+  return safeClone;
+}
 
 // Helper: Check if a genuine Gemini API key is configured
 function hasValidGeminiKey(): boolean {
@@ -26,25 +323,31 @@ function getAiClient(): GoogleGenAI {
   });
 }
 
-// Helper: Extract text from PDF base64 if present (lazy-loaded to keep server startup fast)
-async function extractTextFromBase64File(base64Data: string, mimeType?: string): Promise<string> {
+// Helper: Extract text from validated PDF buffer (lazy-loaded with timeout and cleanup)
+async function extractTextFromPdfBuffer(buffer?: Buffer, mimeType?: string): Promise<string> {
+  if (!buffer || mimeType !== 'application/pdf') return '';
+  let parser: { getText: () => Promise<{ text?: string }>; destroy?: () => Promise<void> } | null = null;
   try {
-    if (!base64Data) return '';
-    // Strip data URL prefix if present (e.g., data:application/pdf;base64,...)
-    const cleanBase64 = base64Data.includes(',') ? base64Data.split(',')[1] : base64Data;
-    const isPdf = (mimeType && mimeType.includes('pdf')) || cleanBase64.startsWith('JVBERi0') || base64Data.includes('application/pdf');
-    if (isPdf) {
-      const buffer = Buffer.from(cleanBase64, 'base64');
-      // @ts-ignore
-      const { PDFParse } = await import('pdf-parse');
-      const parser = new PDFParse({ data: buffer });
-      const res = await parser.getText();
-      return res.text || '';
-    }
+    const { PDFParse } = await import('pdf-parse');
+    parser = new PDFParse({ data: buffer }) as unknown as {
+      getText: () => Promise<{ text?: string }>;
+      destroy?: () => Promise<void>;
+    };
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('PDF parse timeout')), PDF_PARSE_TIMEOUT_MS)
+    );
+    const res = await Promise.race([parser.getText(), timeoutPromise]);
+    return (res?.text || '').slice(0, MAX_TEXT_LENGTH);
   } catch (err) {
-    console.warn('PDFParse warning:', err);
+    console.warn('PDFParse warning:', err instanceof Error ? err.message : 'parse failed');
+    return '';
+  } finally {
+    try {
+      await parser?.destroy?.();
+    } catch {
+      // Ignore cleanup errors
+    }
   }
-  return '';
 }
 
 
@@ -565,30 +868,136 @@ function deterministicParseWater(text: string): { data?: any; error?: string } {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '25mb' }));
+  app.disable('x-powered-by');
+  app.set('trust proxy', 1);
+
+  // 1. Force HTTPS behind reverse proxy in production
+  app.use((req, res, next) => {
+    const host = (req.headers.host || '').toLowerCase();
+    const isLocalHost = host.startsWith('localhost') || host.startsWith('127.0.0.1');
+    if (IS_PROD && !isLocalHost && req.headers['x-forwarded-proto'] === 'http') {
+      return res.redirect(301, `https://${req.headers.host}${req.originalUrl}`);
+    }
+    next();
+  });
+
+  // 2. Block dotfiles (.env, .git, .npmrc) & sensitive internal/backup paths
+  app.use((req, res, next) => {
+    const reqPath = req.path || '/';
+    const isDotfile = /(^|\/)\.(?!well-known(\/|$))/i.test(reqPath);
+    const isSensitiveFile =
+      /^\/(package\.json|package-lock\.json|bun\.lock|server\.ts|tsconfig\.json|vite\.config\.ts|metadata\.json)$/i.test(reqPath) ||
+      /\.(env|git|npmrc|bak|old|orig|sql|sqlite|db|log|swp)$/i.test(reqPath) ||
+      (IS_PROD && /\.map$/i.test(reqPath));
+
+    if (isDotfile || isSensitiveFile) {
+      logSecurityEvent('WARN', 'SENSITIVE_PATH_PROBE', req);
+      trackSuspiciousEvent(req, 'SENSITIVE_PATH_PROBE');
+      return res.status(404).type('text/plain').send('Not Found');
+    }
+    next();
+  });
+
+  // 3. Global HTTP Security Headers
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+
+    if (IS_PROD || req.secure || req.headers['x-forwarded-proto'] === 'https') {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+
+    // CSP: keeps AI Studio preview iframe compatible while locking down objects, base URI, and frame ancestors.
+    const csp = IS_PROD
+      ? "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://aistudio.google.com https://*.google.com https://*.googleusercontent.com;"
+      : "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://aistudio.google.com https://*.google.com https://*.googleusercontent.com;";
+    res.setHeader('Content-Security-Policy', csp);
+
+    // Prevent indexing or proxy caching of sample bills in /assets/aistudio
+    if (req.path.startsWith('/assets/aistudio/')) {
+      res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+      res.setHeader('Cache-Control', 'no-store');
+    }
+
+    next();
+  });
+
+  // Global small JSON limit for standard routes; /api/ai/* uses aiJsonParser (15mb)
+  const smallJsonParser = express.json({ limit: '100kb' });
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/ai/')) return next();
+    return smallJsonParser(req, res, next);
+  });
+
+  // 4. Strict CORS + Anti-CSRF Origin & Content-Type guard for /api/*
+  app.use('/api', (req, res, next) => {
+    const origin = req.headers.origin;
+    const allowedOrigins = getAllowedOrigins(req);
+
+    if (origin) {
+      if (!allowedOrigins.has(origin)) {
+        logSecurityEvent('WARN', 'CORS_BLOCKED', req, { origin: origin.slice(0, 120) });
+        trackSuspiciousEvent(req, 'CORS_BLOCKED');
+        return res.status(403).json({ error: 'Origen no autorizado por la política CORS.' });
+      }
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    }
+
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+
+    // Mitigate cross-site HTML form POST CSRF
+    const secFetchSite = req.headers['sec-fetch-site'];
+    if (secFetchSite === 'cross-site' && (!origin || !allowedOrigins.has(origin))) {
+      logSecurityEvent('WARN', 'CSRF_SUSPECT_ORIGIN', req, { secFetchSite: String(secFetchSite) });
+      trackSuspiciousEvent(req, 'CSRF_SUSPECT_ORIGIN');
+      return res.status(403).json({ error: 'Petición cross-site bloqueada.' });
+    }
+
+    if (req.method === 'POST' && !req.is('application/json')) {
+      logSecurityEvent('WARN', 'INVALID_CONTENT_TYPE', req);
+      return res.status(415).json({ error: 'Content-Type debe ser application/json.' });
+    }
+
+    next();
+  });
+
+  // 5. Rate limiting & upload body parser for AI/PDF endpoints
+  const aiRateLimiter = createRateLimiter(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX);
+  const aiJsonParser = express.json({ limit: '15mb' });
 
   // API Endpoint for Water Bill Parsing
-  app.post('/api/ai/parse-water', async (req, res) => {
+  app.post('/api/ai/parse-water', aiRateLimiter, aiJsonParser, async (req, res) => {
     try {
-      const { text, fileBase64, image, mimeType } = req.body;
-      const rawPayload = fileBase64 || image;
-
-      if (!text && !rawPayload) {
-        return res.status(400).json({ error: 'Se requiere adjuntar el archivo PDF de la factura o una imagen.' });
+      const validation = validateBillUploadBody(req.body);
+      if (validation.error || !validation.payload) {
+        logSecurityEvent('WARN', 'INVALID_FILE_UPLOAD', req, { endpoint: 'water', reason: validation.error || 'unknown' });
+        trackSuspiciousEvent(req, 'INVALID_FILE_UPLOAD');
+        return res.status(400).json({ error: validation.error || 'Archivo o datos inválidos.' });
       }
+
+      const { text, buffer, cleanBase64, detectedMimeType } = validation.payload;
 
       // Step 1: Extract clean text if it is a PDF
-      let extractedPdfText = '';
-      if (rawPayload) {
-        extractedPdfText = await extractTextFromBase64File(rawPayload, mimeType);
-      }
+      const extractedPdfText = await extractTextFromPdfBuffer(buffer, detectedMimeType);
+      const combinedText = (extractedPdfText ? extractedPdfText + '\n\n' : '') + text;
 
-      const combinedText = (extractedPdfText ? extractedPdfText + '\n\n' : '') + (text || '');
+      if (!cleanBase64 && combinedText.trim().length < 20) {
+        return res.status(422).json({ error: 'El texto de la factura de agua es demasiado corto o ilegible. No se inventan datos.' });
+      }
 
       // Check utility type mismatch before parsing
       if (combinedText.trim().length > 20) {
         const mismatch = detectUtilityMismatch(combinedText, 'WATER');
         if (mismatch) {
+          logSecurityEvent('INFO', 'BILL_UTILITY_MISMATCH', req, { expected: 'WATER' });
           return res.status(422).json({ error: mismatch });
         }
       }
@@ -657,12 +1066,11 @@ ${combinedText || '[Archivo adjunto]'}
 `;
 
           const contents: any[] = [];
-          if (rawPayload) {
-            const clean = rawPayload.includes(',') ? rawPayload.split(',')[1] : rawPayload;
+          if (cleanBase64 && detectedMimeType) {
             contents.push({
               inlineData: {
-                mimeType: mimeType || (clean.startsWith('JVBERi0') ? 'application/pdf' : 'image/jpeg'),
-                data: clean,
+                mimeType: detectedMimeType,
+                data: cleanBase64,
               },
             });
           }
@@ -683,14 +1091,16 @@ ${combinedText || '[Archivo adjunto]'}
           const cleaned = rawJson.replace(/```json/g, '').replace(/```/g, '').trim();
           const parsed = JSON.parse(cleaned);
           if (parsed?.error) {
-            return res.status(422).json({ error: parsed.error });
+            return res.status(422).json({ error: String(parsed.error).slice(0, 300) });
           }
           if (parsed && Number(parsed.totalAmount) > 0) {
-            parsed.utilityType = 'WATER';
-            return res.json(parsed);
+            const safeOut = sanitizeParsedBillOutput(parsed, 'WATER');
+            if (safeOut) return res.json(safeOut);
           }
         } catch (geminiErr) {
-          console.warn('Gemini water parse warning (falling back to deterministic parser):', geminiErr);
+          logSecurityEvent('WARN', 'GEMINI_FALLBACK_WATER', req, {
+            reason: geminiErr instanceof Error ? geminiErr.message.slice(0, 80) : 'unknown',
+          });
         }
       }
 
@@ -700,34 +1110,39 @@ ${combinedText || '[Archivo adjunto]'}
         return res.status(422).json({ error: result.error || 'No se pudo leer la factura de agua.' });
       }
       return res.json(result.data);
-    } catch (error: any) {
-      console.error('Error parsing water bill:', error);
-      res.status(500).json({ error: error.message || 'Error al procesar la factura de agua.' });
+    } catch (error: unknown) {
+      logSecurityEvent('ALERT', 'INTERNAL_ERROR_WATER', req, {
+        message: error instanceof Error ? error.message.slice(0, 120) : 'unknown',
+      });
+      res.status(500).json({ error: 'Error interno al procesar la factura de agua.' });
     }
   });
 
   // API Endpoint for Electricity Bill Parsing (Auditoría Exhaustiva de Luz)
-  app.post('/api/ai/parse-electricity', async (req, res) => {
+  app.post('/api/ai/parse-electricity', aiRateLimiter, aiJsonParser, async (req, res) => {
     try {
-      const { text, fileBase64, image, mimeType } = req.body;
-      const rawPayload = fileBase64 || image;
-
-      if (!text && !rawPayload) {
-        return res.status(400).json({ error: 'Se requiere adjuntar el archivo PDF de la factura o una imagen.' });
+      const validation = validateBillUploadBody(req.body);
+      if (validation.error || !validation.payload) {
+        logSecurityEvent('WARN', 'INVALID_FILE_UPLOAD', req, { endpoint: 'electricity', reason: validation.error || 'unknown' });
+        trackSuspiciousEvent(req, 'INVALID_FILE_UPLOAD');
+        return res.status(400).json({ error: validation.error || 'Archivo o datos inválidos.' });
       }
+
+      const { text, buffer, cleanBase64, detectedMimeType } = validation.payload;
 
       // Step 1: Extract clean text if it is a PDF
-      let extractedPdfText = '';
-      if (rawPayload) {
-        extractedPdfText = await extractTextFromBase64File(rawPayload, mimeType);
-      }
+      const extractedPdfText = await extractTextFromPdfBuffer(buffer, detectedMimeType);
+      const combinedText = (extractedPdfText ? extractedPdfText + '\n\n' : '') + text;
 
-      const combinedText = (extractedPdfText ? extractedPdfText + '\n\n' : '') + (text || '');
+      if (!cleanBase64 && combinedText.trim().length < 20) {
+        return res.status(422).json({ error: 'El texto de la factura de luz es demasiado corto o ilegible. No se inventan datos.' });
+      }
 
       // Check utility type mismatch before parsing
       if (combinedText.trim().length > 20) {
         const mismatch = detectUtilityMismatch(combinedText, 'ELECTRICITY');
         if (mismatch) {
+          logSecurityEvent('INFO', 'BILL_UTILITY_MISMATCH', req, { expected: 'ELECTRICITY' });
           return res.status(422).json({ error: mismatch });
         }
       }
@@ -796,12 +1211,11 @@ ${combinedText || '[Archivo adjunto]'}
 `;
 
           const contents: any[] = [];
-          if (rawPayload) {
-            const clean = rawPayload.includes(',') ? rawPayload.split(',')[1] : rawPayload;
+          if (cleanBase64 && detectedMimeType) {
             contents.push({
               inlineData: {
-                mimeType: mimeType || (clean.startsWith('JVBERi0') ? 'application/pdf' : 'image/jpeg'),
-                data: clean,
+                mimeType: detectedMimeType,
+                data: cleanBase64,
               },
             });
           }
@@ -822,14 +1236,16 @@ ${combinedText || '[Archivo adjunto]'}
           const cleaned = rawJson.replace(/```json/g, '').replace(/```/g, '').trim();
           const parsed = JSON.parse(cleaned);
           if (parsed?.error) {
-            return res.status(422).json({ error: parsed.error });
+            return res.status(422).json({ error: String(parsed.error).slice(0, 300) });
           }
           if (parsed && Number(parsed.totalAmount) > 0) {
-            parsed.utilityType = 'ELECTRICITY';
-            return res.json(parsed);
+            const safeOut = sanitizeParsedBillOutput(parsed, 'ELECTRICITY');
+            if (safeOut) return res.json(safeOut);
           }
         } catch (geminiErr) {
-          console.warn('Gemini electricity parse warning (falling back to deterministic parser):', geminiErr);
+          logSecurityEvent('WARN', 'GEMINI_FALLBACK_ELECTRICITY', req, {
+            reason: geminiErr instanceof Error ? geminiErr.message.slice(0, 80) : 'unknown',
+          });
         }
       }
 
@@ -839,22 +1255,44 @@ ${combinedText || '[Archivo adjunto]'}
         return res.status(422).json({ error: result.error || 'No se pudo leer la factura de luz.' });
       }
       return res.json(result.data);
-    } catch (error: any) {
-      console.error('Error parsing electricity bill:', error);
-      res.status(500).json({ error: error.message || 'Error al procesar la factura de luz.' });
+    } catch (error: unknown) {
+      logSecurityEvent('ALERT', 'INTERNAL_ERROR_ELECTRICITY', req, {
+        message: error instanceof Error ? error.message.slice(0, 120) : 'unknown',
+      });
+      res.status(500).json({ error: 'Error interno al procesar la factura de luz.' });
     }
   });
 
+  // Generic JSON parse error handler (prevents raw Express body-parser stack traces)
+  app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+    if (err instanceof SyntaxError && 'body' in err) {
+      logSecurityEvent('WARN', 'MALFORMED_JSON_BODY', req);
+      return res.status(400).json({ error: 'Cuerpo JSON mal formado.' });
+    }
+    if (err && typeof err === 'object' && 'type' in err && (err as { type?: string }).type === 'entity.too.large') {
+      logSecurityEvent('WARN', 'PAYLOAD_TOO_LARGE', req);
+      return res.status(413).json({ error: 'El tamaño de la petición supera el límite permitido.' });
+    }
+    next(err);
+  });
+
   // Vite middleware for development
-  if (process.env.NODE_ENV !== 'production') {
+  if (!IS_PROD) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.join(__dirname, 'dist')));
+    app.use(
+      express.static(path.join(__dirname, 'dist'), {
+        dotfiles: 'deny',
+        etag: true,
+        maxAge: '1d',
+      })
+    );
     app.get('*', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
       res.sendFile(path.join(__dirname, 'dist', 'index.html'));
     });
   }

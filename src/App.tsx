@@ -236,6 +236,71 @@ interface CustomHistoricalEntry {
   notes?: string;
 }
 
+// --- Security Helpers (Prototype Pollution, Safe Storage & CSV Sanitization) ---
+const MAX_CLIENT_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_JSON_BACKUP_BYTES = 5 * 1024 * 1024; // 5 MB
+const MAX_CSV_IMPORT_BYTES = 2 * 1024 * 1024; // 2 MB
+const MAX_CSV_ROWS = 2000;
+const ALLOWED_UPLOAD_TYPES = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/webp',
+]);
+
+function safeJsonParse<T = unknown>(raw: string): T {
+  return JSON.parse(raw, (key, value) => {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+      return undefined;
+    }
+    return value;
+  }) as T;
+}
+
+function safeReadStorage<T>(key: string, fallback: T, validate?: (v: unknown) => v is T): T {
+  try {
+    const saved = localStorage.getItem(key);
+    if (!saved) return fallback;
+    const parsed = safeJsonParse<unknown>(saved);
+    if (validate && !validate(parsed)) return fallback;
+    return parsed as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function sanitizeImportedText(raw: string, maxLen = 160): string {
+  const cleaned = String(raw || '').replace(/[\0\r\n]/g, ' ').trim();
+  // Neutralize CSV formula injection prefixes (=, +, -, @, tab)
+  const neutralized = /^[=+\-@\t]/.test(cleaned) ? `'${cleaned}` : cleaned;
+  return neutralized.slice(0, maxLen);
+}
+
+function parseCsvRow(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'tenant' | 'months' | 'expenses' | 'billing' | 'desglose' | 'stats' | 'backup' | 'analytics'>('tenant');
   const [expensesSubTab, setExpensesSubTab] = useState<'summary' | 'audit_elec' | 'audit_water' | 'other'>('summary');
@@ -247,50 +312,59 @@ export default function App() {
   const [analyticsCompareWith, setAnalyticsCompareWith] = useState<'PREV_YEAR' | 'AVERAGE'>('PREV_YEAR');
 
   // Tenant state
-  const [tenant, setTenant] = useState<TenantInfo>(() => {
-    const saved = localStorage.getItem('inquilinopro_tenant');
-    return saved ? JSON.parse(saved) : {
-      name: 'Borja Álvarez',
-      dni: '48291024-X',
-      phone: '+34 612 345 678',
-      familyPhone: '+34 698 765 432',
-      familyName: 'María Álvarez (Madre)',
-      familyRelationship: 'Madre',
-    };
-  });
+  const [tenant, setTenant] = useState<TenantInfo>(() =>
+    safeReadStorage<TenantInfo>(
+      'inquilinopro_tenant',
+      {
+        name: 'Borja Álvarez',
+        dni: '48291024-X',
+        phone: '+34 612 345 678',
+        familyPhone: '+34 698 765 432',
+        familyName: 'María Álvarez (Madre)',
+        familyRelationship: 'Madre',
+      },
+      (v): v is TenantInfo => Boolean(v && typeof v === 'object' && !Array.isArray(v))
+    )
+  );
 
   // Advance payments
-  const [advances, setAdvances] = useState<AdvancePayment[]>(() => {
-    const saved = localStorage.getItem('inquilinopro_advances');
-    return saved ? JSON.parse(saved) : [
-      { id: '1', count: 2, cost: 600, description: 'Fianza legal (2 meses de fianza/adelanto)', date: '2025-01-01' }
-    ];
-  });
+  const [advances, setAdvances] = useState<AdvancePayment[]>(() =>
+    safeReadStorage<AdvancePayment[]>(
+      'inquilinopro_advances',
+      [{ id: '1', count: 2, cost: 600, description: 'Fianza legal (2 meses de fianza/adelanto)', date: '2025-01-01' }],
+      Array.isArray
+    )
+  );
 
   // Rent rates
-  const [rentRates, setRentRates] = useState<RentRate[]>(() => {
-    const saved = localStorage.getItem('inquilinopro_rents');
-    return saved ? JSON.parse(saved) : [
-      { id: '1', amount: 250, startDate: '2021-07-01', modificationDate: '2021-07-01', reason: 'Inicio de contrato' },
-      { id: '2', amount: 300, startDate: '2026-07-01', modificationDate: '2026-06-15', reason: 'Actualización IPC y mejora' }
-    ];
-  });
+  const [rentRates, setRentRates] = useState<RentRate[]>(() =>
+    safeReadStorage<RentRate[]>(
+      'inquilinopro_rents',
+      [
+        { id: '1', amount: 250, startDate: '2021-07-01', modificationDate: '2021-07-01', reason: 'Inicio de contrato' },
+        { id: '2', amount: 300, startDate: '2026-07-01', modificationDate: '2026-06-15', reason: 'Actualización IPC y mejora' },
+      ],
+      Array.isArray
+    )
+  );
 
   // Supply split rules
-  const [supplyRules, setSupplyRules] = useState<SupplySplitRules>(() => {
-    const saved = localStorage.getItem('inquilinopro_supply_rules');
-    return saved ? JSON.parse(saved) : {
-      electricity: 50,
-      water: 50,
-      gas: 0,
-      internet: 0
-    };
-  });
+  const [supplyRules, setSupplyRules] = useState<SupplySplitRules>(() =>
+    safeReadStorage<SupplySplitRules>(
+      'inquilinopro_supply_rules',
+      {
+        electricity: 50,
+        water: 50,
+        gas: 0,
+        internet: 0,
+      },
+      (v): v is SupplySplitRules => Boolean(v && typeof v === 'object' && !Array.isArray(v))
+    )
+  );
 
   // Water expenses (Desglose tipo EMUASA Aguas de Murcia con tasas municipales)
-  const [waterExpenses, setWaterExpenses] = useState<WaterExpense[]>(() => {
-    const saved = localStorage.getItem('inquilinopro_water_v2');
-    return saved ? JSON.parse(saved) : [
+  const [waterExpenses, setWaterExpenses] = useState<WaterExpense[]>(() =>
+    safeReadStorage<WaterExpense[]>('inquilinopro_water_v2', [
       {
         id: 'w_sep26',
         utilityType: 'WATER',
@@ -393,13 +467,12 @@ export default function App() {
         notes: 'Liquidada en recibo',
         status: 'PAID'
       }
-    ];
-  });
+    ], Array.isArray)
+  );
 
   // Electricity expenses (Historial real Repsol con seguimiento de precio kWh, tramos y servicios ocultos)
-  const [electricityExpenses, setElectricityExpenses] = useState<ElectricityExpense[]>(() => {
-    const saved = localStorage.getItem('inquilinopro_elec_v2');
-    return saved ? JSON.parse(saved) : [
+  const [electricityExpenses, setElectricityExpenses] = useState<ElectricityExpense[]>(() =>
+    safeReadStorage<ElectricityExpense[]>('inquilinopro_elec_v2', [
       {
         id: 'e_oct26',
         utilityType: 'ELECTRICITY',
@@ -577,25 +650,28 @@ export default function App() {
         notes: 'Cambio de tarifa registrado en hoja Repsol',
         status: 'PAID'
       }
-    ];
-  });
+    ], Array.isArray)
+  );
 
   // Other expenses
-  const [otherExpenses, setOtherExpenses] = useState<OtherExpense[]>(() => {
-    const saved = localStorage.getItem('inquilinopro_other');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [otherExpenses, setOtherExpenses] = useState<OtherExpense[]>(() =>
+    safeReadStorage<OtherExpense[]>('inquilinopro_other', [], Array.isArray)
+  );
 
   // Receipts list
-  const [receipts, setReceipts] = useState<ReceiptItem[]>(() => {
-    const saved = localStorage.getItem('inquilinopro_receipts');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [receipts, setReceipts] = useState<ReceiptItem[]>(() =>
+    safeReadStorage<ReceiptItem[]>('inquilinopro_receipts', [], Array.isArray)
+  );
 
   // Arrears / Balance carryover
   const [tenantAccumulatedBalance, setTenantAccumulatedBalance] = useState<number>(() => {
-    const saved = localStorage.getItem('inquilinopro_tenant_balance');
-    return saved ? parseFloat(saved) : 0;
+    try {
+      const saved = localStorage.getItem('inquilinopro_tenant_balance');
+      const num = saved ? parseFloat(saved) : 0;
+      return Number.isFinite(num) ? num : 0;
+    } catch {
+      return 0;
+    }
   });
 
   // Multi-year History Filter & Custom Entries State
@@ -613,9 +689,8 @@ export default function App() {
   const [histFormRepairs, setHistFormRepairs] = useState<string>('0');
   const [histFormStatus, setHistFormStatus] = useState<'PAID' | 'PENDING'>('PAID');
 
-  const [customHistoricalEntries, setCustomHistoricalEntries] = useState<CustomHistoricalEntry[]>(() => {
-    const saved = localStorage.getItem('inquilinopro_custom_history');
-    return saved ? JSON.parse(saved) : [
+  const [customHistoricalEntries, setCustomHistoricalEntries] = useState<CustomHistoricalEntry[]>(() =>
+    safeReadStorage<CustomHistoricalEntry[]>('inquilinopro_custom_history', [
       { id: 'h2025_12', year: 2025, monthKey: '2025-12', monthName: 'Diciembre 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 75.40, waterCost: 0, gasCost: 0, repairsCost: 0, status: 'PAID' },
       { id: 'h2025_11', year: 2025, monthKey: '2025-11', monthName: 'Noviembre 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 68.20, waterCost: 40.10, gasCost: 0, repairsCost: 0, status: 'PAID' },
       { id: 'h2025_10', year: 2025, monthKey: '2025-10', monthName: 'Octubre 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 62.00, waterCost: 0, gasCost: 0, repairsCost: 0, status: 'PAID' },
@@ -628,8 +703,8 @@ export default function App() {
       { id: 'h2025_03', year: 2025, monthKey: '2025-03', monthName: 'Marzo 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 65.00, waterCost: 39.50, gasCost: 0, repairsCost: 0, status: 'PAID' },
       { id: 'h2025_02', year: 2025, monthKey: '2025-02', monthName: 'Febrero 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 78.90, waterCost: 0, gasCost: 0, repairsCost: 0, status: 'PAID' },
       { id: 'h2025_01', year: 2025, monthKey: '2025-01', monthName: 'Enero 2025', tenantName: 'Borja Álvarez', rentAmount: 250, elecCost: 82.30, waterCost: 41.20, gasCost: 0, repairsCost: 0, status: 'PAID' },
-    ];
-  });
+    ], Array.isArray)
+  );
 
   // Save to LocalStorage
   useEffect(() => {
@@ -1192,15 +1267,47 @@ export default function App() {
   const handleFileSelect = (file: File) => {
     if (!file) return;
     setScanModalFeedback(null);
+
+    if (file.size > MAX_CLIENT_UPLOAD_BYTES) {
+      setScanModalFeedback({
+        kind: 'error',
+        title: 'Archivo demasiado grande',
+        message: 'El archivo supera el límite máximo de seguridad de 10 MB.',
+      });
+      return;
+    }
+
+    const lowerName = file.name.toLowerCase();
+    const inferredMime =
+      file.type ||
+      (lowerName.endsWith('.pdf')
+        ? 'application/pdf'
+        : lowerName.endsWith('.png')
+          ? 'image/png'
+          : lowerName.endsWith('.webp')
+            ? 'image/webp'
+            : lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')
+              ? 'image/jpeg'
+              : '');
+
+    if (!ALLOWED_UPLOAD_TYPES.has(inferredMime.toLowerCase())) {
+      setScanModalFeedback({
+        kind: 'error',
+        title: 'Formato no permitido',
+        message: 'Solo se admiten facturas en PDF o imagen (PNG, JPG, WEBP).',
+      });
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
       const base64 = result.includes(',') ? result.split(',')[1] : result;
       setUploadedPdfBase64(base64);
       setUploadedPdfInfo({
-        name: file.name,
+        name: sanitizeImportedText(file.name, 120),
         size: file.size,
-        type: file.type || (file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg'),
+        type: inferredMime,
       });
     };
     reader.readAsDataURL(file);
@@ -1511,18 +1618,31 @@ export default function App() {
     }
   };
 
-  // CSV Import handler
+  // CSV Import handler (Hardened: size/row bounds, quoted parser, finite numeric & date checks, anti-CSV injection)
   const handleCsvImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (file.size > MAX_CSV_IMPORT_BYTES) {
+      alert('El archivo CSV supera el tamaño máximo permitido (2 MB).');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
-        const text = event.target?.result as string;
-        const lines = text.split('\n');
+        const text = event.target?.result;
+        if (typeof text !== 'string') {
+          alert('No se pudo leer el archivo CSV como texto.');
+          return;
+        }
+        const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
         if (lines.length < 2) {
           alert('El archivo CSV está vacío.');
+          return;
+        }
+        if (lines.length > MAX_CSV_ROWS + 1) {
+          alert(`El archivo CSV excede el máximo de ${MAX_CSV_ROWS} filas permitidas.`);
           return;
         }
 
@@ -1531,23 +1651,25 @@ export default function App() {
         let importedCount = 0;
 
         for (let i = 1; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (!line) continue;
-
-          const cols = line.split(',').map(c => c.replace(/^"|"$/g, '').trim());
+          const cols = parseCsvRow(lines[i]);
           if (cols.length >= 6) {
-            const id = cols[0];
-            const utilityType = cols[2];
-            const receptionDate = cols[3];
-            const rawAmount = parseFloat(cols[4]) || 0;
-            const estado = cols[5];
+            const id = sanitizeImportedText(cols[0], 64);
+            const utilityType = cols[2].trim().toUpperCase();
+            const rawDate = cols[3].trim();
+            const receptionDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : todayStr;
+            const rawAmount = parseFloat(cols[4].replace(',', '.'));
+            const estado = cols[5].trim().toUpperCase();
+
+            if (!id || !Number.isFinite(rawAmount) || rawAmount <= 0 || rawAmount > 100_000) {
+              continue;
+            }
 
             if (utilityType === 'WATER') {
               const splitPct = supplyRules.water / 100;
               const totalAmount = Math.round(rawAmount * splitPct * 100) / 100;
-              if (!newWaterList.some(w => w.id === id || w.invoiceNumber === id)) {
+              if (!newWaterList.some((w) => w.id === id || w.invoiceNumber === id)) {
                 newWaterList.unshift({
-                  id: id || ('w_' + Math.random()),
+                  id,
                   utilityType: 'WATER',
                   company: 'Suministro Agua (CSV)',
                   invoiceNumber: id,
@@ -1568,20 +1690,20 @@ export default function App() {
                     sewerage: totalAmount * 0.1,
                     wasteCollection: totalAmount * 0.1,
                     sanitationCanon: totalAmount * 0.05,
-                    taxes: totalAmount * 0.05
+                    taxes: totalAmount * 0.05,
                   },
                   alarm: { hasAlarm: false, reason: '' },
                   notes: `CSV (${rawAmount}€, Inq. ${supplyRules.water}%)`,
-                  status: estado === 'PAID' || estado === 'INCLUDED_IN_INVOICE' ? 'PAID' : 'PENDING'
+                  status: estado === 'PAID' || estado === 'INCLUDED_IN_INVOICE' ? 'PAID' : 'PENDING',
                 });
                 importedCount++;
               }
             } else if (utilityType === 'ELECTRICITY') {
               const splitPct = supplyRules.electricity / 100;
               const totalAmount = Math.round(rawAmount * splitPct * 100) / 100;
-              if (!newElecList.some(e => e.id === id || e.invoiceNumber === id)) {
+              if (!newElecList.some((el) => el.id === id || el.invoiceNumber === id)) {
                 newElecList.unshift({
-                  id: id || ('e_' + Math.random()),
+                  id,
                   utilityType: 'ELECTRICITY',
                   company: 'Comercializadora Luz (CSV)',
                   invoiceNumber: id,
@@ -1598,7 +1720,7 @@ export default function App() {
                   topGas: 'No',
                   alarm: { hasAlarm: false, reason: '' },
                   notes: `CSV (${rawAmount}€, Inq. ${supplyRules.electricity}%)`,
-                  status: estado === 'PAID' || estado === 'INCLUDED_IN_INVOICE' ? 'PAID' : 'PENDING'
+                  status: estado === 'PAID' || estado === 'INCLUDED_IN_INVOICE' ? 'PAID' : 'PENDING',
                 });
                 importedCount++;
               }
@@ -1610,8 +1732,8 @@ export default function App() {
         setElectricityExpenses(newElecList);
         alert(`¡Copia importada! ${importedCount} facturas incorporadas con reglas de reparto.`);
         setActiveTab('expenses');
-      } catch (err: any) {
-        alert('Error al procesar CSV: ' + err.message);
+      } catch {
+        alert('Error al procesar el archivo CSV. Verifica que el formato sea válido.');
       }
     };
     reader.readAsText(file);
@@ -1640,26 +1762,48 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  // Full JSON Backup Import
+  // Full JSON Backup Import (Hardened: size bound, prototype pollution stripping, schema validation)
   const handleImportJson = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (file.size > MAX_JSON_BACKUP_BYTES) {
+      alert('El archivo de copia JSON supera el tamaño máximo permitido (5 MB).');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
-        const parsed = JSON.parse(event.target?.result as string);
-        if (parsed.tenant) setTenant(parsed.tenant);
-        if (parsed.advances) setAdvances(parsed.advances);
-        if (parsed.rentRates) setRentRates(parsed.rentRates);
-        if (parsed.supplyRules) setSupplyRules(parsed.supplyRules);
-        if (parsed.waterExpenses) setWaterExpenses(parsed.waterExpenses);
-        if (parsed.electricityExpenses) setElectricityExpenses(parsed.electricityExpenses);
-        if (parsed.otherExpenses) setOtherExpenses(parsed.otherExpenses);
-        if (parsed.receipts) setReceipts(parsed.receipts);
-        if (typeof parsed.tenantAccumulatedBalance === 'number') setTenantAccumulatedBalance(parsed.tenantAccumulatedBalance);
+        const rawText = event.target?.result;
+        if (typeof rawText !== 'string') {
+          alert('No se pudo leer el archivo JSON.');
+          return;
+        }
+        const parsed = safeJsonParse<Record<string, unknown>>(rawText);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          alert('Estructura de copia JSON inválida.');
+          return;
+        }
+
+        if (parsed.tenant && typeof parsed.tenant === 'object' && !Array.isArray(parsed.tenant)) {
+          setTenant(parsed.tenant as TenantInfo);
+        }
+        if (Array.isArray(parsed.advances)) setAdvances(parsed.advances as AdvancePayment[]);
+        if (Array.isArray(parsed.rentRates)) setRentRates(parsed.rentRates as RentRate[]);
+        if (parsed.supplyRules && typeof parsed.supplyRules === 'object' && !Array.isArray(parsed.supplyRules)) {
+          setSupplyRules(parsed.supplyRules as SupplySplitRules);
+        }
+        if (Array.isArray(parsed.waterExpenses)) setWaterExpenses(parsed.waterExpenses as WaterExpense[]);
+        if (Array.isArray(parsed.electricityExpenses)) setElectricityExpenses(parsed.electricityExpenses as ElectricityExpense[]);
+        if (Array.isArray(parsed.otherExpenses)) setOtherExpenses(parsed.otherExpenses as OtherExpense[]);
+        if (Array.isArray(parsed.receipts)) setReceipts(parsed.receipts as ReceiptItem[]);
+        if (typeof parsed.tenantAccumulatedBalance === 'number' && Number.isFinite(parsed.tenantAccumulatedBalance)) {
+          setTenantAccumulatedBalance(parsed.tenantAccumulatedBalance);
+        }
         alert('¡Copia de seguridad JSON restaurada con éxito!');
-      } catch (err: any) {
-        alert('Error al importar archivo JSON: ' + err.message);
+      } catch {
+        alert('Error al importar archivo JSON: el contenido no es válido.');
       }
     };
     reader.readAsText(file);
